@@ -53,23 +53,21 @@ static string gzip_compress(const string& data, int level) {
 }
 
 
-ResourceManager::ResourceManager() : total_bytes(0) { }
+ResourceManager::ResourceManager() : total_bytes(0), compressed_bytes(0) { }
 
-ResourceManager::Resource::Resource(const string& data, const char* mime_type) :
-    data(data), mime_type(mime_type) {
-  if (!this->mime_type) {
-    this->gzip_data = ""; // no compression for redirects
-  } else {
+ResourceManager::Resource::Resource(const string& data, const char* mime_type,
+    int gzip_compress_level) : data(data), gzip_data(), mime_type(mime_type) {
+  // if it's not a redirect and compression is enabled, try to compress it
+  if (this->mime_type && gzip_compress_level) {
     try {
-      this->gzip_data = gzip_compress(this->data, 9);
-    } catch (const inefficient_compression& e) {
-      this->gzip_data = "";
-    }
+      this->gzip_data = gzip_compress(this->data, gzip_compress_level);
+    } catch (const inefficient_compression& e) { }
   }
 }
 
-void ResourceManager::add_directory(const string& directory) {
-  this->add_directory_recursive(directory, directory);
+void ResourceManager::add_directory(const string& directory,
+    int gzip_compress_level) {
+  this->add_directory_recursive(directory, directory, gzip_compress_level);
 }
 
 const ResourceManager::Resource& ResourceManager::get_resource(
@@ -85,12 +83,16 @@ size_t ResourceManager::resource_bytes() const {
   return this->total_bytes;
 }
 
+size_t ResourceManager::compressed_resource_bytes() const {
+  return this->compressed_bytes;
+}
+
 size_t ResourceManager::file_count() const {
   return this->path_to_resource.size();
 }
 
 void ResourceManager::add_directory_recursive(const string& base_path,
-    const string& full_path) {
+    const string& full_path, int gzip_compress_level) {
 
   for (const string& item : list_directory(full_path)) {
 
@@ -108,15 +110,15 @@ void ResourceManager::add_directory_recursive(const string& base_path,
         // the link is not valid; treat it as an external redirect
         string item_relative_path = item_full_path.substr(base_path.size());
         string target = readlink(item_full_path);
-        shared_ptr<Resource> res(new Resource(target, nullptr));
-        log(INFO, "adding name %s", item_relative_path.c_str());
+        shared_ptr<Resource> res(new Resource(target));
         this->name_to_resource.emplace(item_relative_path, res);
         continue;
       }
     }
 
     if (type == S_IFDIR) {
-      this->add_directory_recursive(base_path, item_full_path);
+      this->add_directory_recursive(base_path, item_full_path,
+          gzip_compress_level);
 
     } else if (type == S_IFREG) {
       string item_relative_path = item_full_path.substr(base_path.size());
@@ -129,16 +131,15 @@ void ResourceManager::add_directory_recursive(const string& base_path,
       auto existing_file_it = this->path_to_resource.find(real_item_full_path);
       if (existing_file_it == this->path_to_resource.end()) {
         // resource doesn't exist; create a new one
-        shared_ptr<Resource> res(new Resource(
-            load_file(item_full_path), mime_type_for_filename(item)));
-        log(INFO, "adding name %s", item_relative_path.c_str());
+        shared_ptr<Resource> res(new Resource(load_file(item_full_path),
+            mime_type_for_filename(item), gzip_compress_level));
         this->path_to_resource.emplace(real_item_full_path, res);
         this->name_to_resource.emplace(item_relative_path, res);
         this->total_bytes += res->data.size();
+        this->compressed_bytes += res->gzip_data.size();
 
       } else {
         // make an alias for this resource
-        log(INFO, "adding name %s", item_relative_path.c_str());
         this->name_to_resource.emplace(
             item_relative_path, existing_file_it->second);
       }

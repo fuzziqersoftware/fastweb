@@ -19,22 +19,25 @@ public:
     std::string gzip_data; // if blank, compressed is larger than original
     const char* mime_type; // if NULL, it's a redirect
 
-    Resource(const std::string& data, const char* mime_type);
+    Resource(const std::string& data, const char* mime_type = NULL,
+        int gzip_compress_level = 6);
   };
 
-  void add_directory(const std::string& directory);
+  void add_directory(const std::string& directory, int gzip_compress_level = 6);
 
   const Resource& get_resource(const std::string& name) const;
 
   size_t resource_count() const;
   size_t resource_bytes() const;
+  size_t compressed_resource_bytes() const;
   size_t file_count() const;
 
 private:
   void add_directory_recursive(const std::string& base_path,
-      const std::string& full_path);
+      const std::string& full_path, int gzip_compress_level);
 
   std::unordered_map<std::string, std::shared_ptr<Resource>> name_to_resource;
   std::unordered_map<std::string, std::shared_ptr<Resource>> path_to_resource;
   size_t total_bytes;
+  size_t compressed_bytes;
 };

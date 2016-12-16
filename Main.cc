@@ -205,6 +205,7 @@ int main(int argc, char **argv) {
   size_t num_threads = 0;
   int num_bad_options = 0;
   pid_t signal_parent_pid = 0;
+  int gzip_compress_level = 6;
 
   const char* user = NULL;
   for (int x = 1; x < argc; x++) {
@@ -226,6 +227,9 @@ int main(int argc, char **argv) {
 
     } else if (!strncmp(argv[x], "--404=", 6)) {
       not_found_resource_name = &argv[x][6];
+
+    } else if (!strncmp(argv[x], "--gzip-level=", 13)) {
+      gzip_compress_level = atoi(&argv[x][13]);
 
     } else if (!strncmp(argv[x], "--listen=", 9)) {
       auto parts = split(&argv[x][9], ':');
@@ -266,24 +270,20 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  // register signal handlers
-  signal(SIGPIPE, SIG_IGN);
-  signal(SIGTERM, signal_handler);
-  signal(SIGINT, signal_handler);
-  signal(SIGHUP, signal_handler);
-  signal(SIGCHLD, signal_handler);
-
   // load data
   uint64_t load_start_time = now();
   ServerConfiguration state;
   for (const auto& directory : data_directories) {
-    state.resource_manager.add_directory(directory);
+    state.resource_manager.add_directory(directory, gzip_compress_level);
   }
   uint64_t load_end_time = now();
-  log(INFO, "loaded %zu resources, including %zu files (%zu bytes), in %" PRIu64 " microseconds",
+  log(INFO, "loaded %zu resources, including %zu files (%zu bytes, %zu compressed, %g%%), in %" PRIu64 " microseconds",
       state.resource_manager.resource_count(),
       state.resource_manager.file_count(),
-      state.resource_manager.resource_bytes(), load_end_time - load_start_time);
+      state.resource_manager.resource_bytes(),
+      state.resource_manager.compressed_resource_bytes(),
+      ((float)state.resource_manager.compressed_resource_bytes() / state.resource_manager.resource_bytes()) * 100,
+      load_end_time - load_start_time);
 
   // resolve special resources
   if (!index_resource_name.empty()) {
@@ -321,7 +321,7 @@ int main(int argc, char **argv) {
   }
 
   // drop privileges if requested
-  if (!user) {
+  if (user) {
     if ((getuid() != 0) || (getgid() != 0)) {
       log(ERROR, "not started as root; can\'t switch to user %s", user);
       return 2;
@@ -358,6 +358,13 @@ int main(int argc, char **argv) {
         cref(state));
   }
   log(INFO, "started %d server threads", num_threads);
+
+  // register signal handlers
+  signal(SIGPIPE, SIG_IGN);
+  signal(SIGTERM, signal_handler);
+  signal(SIGINT, signal_handler);
+  signal(SIGHUP, signal_handler);
+  signal(SIGCHLD, signal_handler);
 
   // kill the parent if needed
   if (signal_parent_pid) {

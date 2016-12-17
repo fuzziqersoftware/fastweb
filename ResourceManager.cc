@@ -55,8 +55,10 @@ static string gzip_compress(const string& data, int level) {
 
 ResourceManager::ResourceManager() : total_bytes(0), compressed_bytes(0) { }
 
-ResourceManager::Resource::Resource(const string& data, const char* mime_type,
-    int gzip_compress_level) : data(data), gzip_data(), mime_type(mime_type) {
+ResourceManager::Resource::Resource(const string& data,
+    uint64_t modification_time, const char* mime_type, int gzip_compress_level)
+    : data(data), gzip_data(), modification_time(modification_time),
+    mime_type(mime_type) {
   // if it's not a redirect and compression is enabled, try to compress it
   if (this->mime_type && gzip_compress_level) {
     try {
@@ -67,12 +69,37 @@ ResourceManager::Resource::Resource(const string& data, const char* mime_type,
 
 void ResourceManager::add_directory(const string& directory,
     int gzip_compress_level) {
-  this->add_directory_recursive(directory, directory, gzip_compress_level);
+  this->add_directory_recursive(directory, directory, stat(directory).st_mtime,
+      gzip_compress_level);
 }
 
 const ResourceManager::Resource& ResourceManager::get_resource(
     const string& name) const {
   return *this->name_to_resource.at(name);
+}
+
+bool ResourceManager::any_resource_changed() const {
+  for (const auto& it : this->directory_path_to_mtime) {
+    try {
+      if (stat(it.first).st_mtime != it.second) {
+        return true;
+      }
+    } catch (cannot_stat_file& e) {
+      return true; // it was likely deleted
+    }
+  }
+
+  for (const auto& it : this->path_to_resource) {
+    try {
+      if (stat(it.first).st_mtime != it.second->modification_time) {
+        return true;
+      }
+    } catch (cannot_stat_file& e) {
+      return true; // it was likely deleted
+    }
+  }
+
+  return false;
 }
 
 size_t ResourceManager::resource_count() const {
@@ -92,32 +119,36 @@ size_t ResourceManager::file_count() const {
 }
 
 void ResourceManager::add_directory_recursive(const string& base_path,
-    const string& full_path, int gzip_compress_level) {
+    const string& full_path, uint64_t directory_mtime, int gzip_compress_level) {
+
+  this->directory_path_to_mtime.emplace(full_path, directory_mtime);
 
   for (const string& item : list_directory(full_path)) {
 
     string item_full_path = full_path + "/" + item;
-    int type = lstat(item_full_path).st_mode & S_IFMT;
+    auto st = lstat(item_full_path);
+    int type = st.st_mode & S_IFMT;
 
     string real_item_full_path;
     if (type == S_IFLNK) {
       try {
         real_item_full_path = realpath(item_full_path);
         // if realpath doesn't throw, the link is valid; process the target
-        type = stat(item).st_mode & S_IFMT;
+        st = stat(real_item_full_path);
+        type = st.st_mode & S_IFMT;
 
       } catch (const cannot_stat_file& e) {
         // the link is not valid; treat it as an external redirect
         string item_relative_path = item_full_path.substr(base_path.size());
         string target = readlink(item_full_path);
-        shared_ptr<Resource> res(new Resource(target));
+        shared_ptr<Resource> res(new Resource(target, st.st_mtime));
         this->name_to_resource.emplace(item_relative_path, res);
         continue;
       }
     }
 
     if (type == S_IFDIR) {
-      this->add_directory_recursive(base_path, item_full_path,
+      this->add_directory_recursive(base_path, item_full_path, st.st_mtime,
           gzip_compress_level);
 
     } else if (type == S_IFREG) {
@@ -132,7 +163,7 @@ void ResourceManager::add_directory_recursive(const string& base_path,
       if (existing_file_it == this->path_to_resource.end()) {
         // resource doesn't exist; create a new one
         shared_ptr<Resource> res(new Resource(load_file(item_full_path),
-            mime_type_for_filename(item), gzip_compress_level));
+            st.st_mtime, mime_type_for_filename(item), gzip_compress_level));
         this->path_to_resource.emplace(real_item_full_path, res);
         this->name_to_resource.emplace(item_relative_path, res);
         this->total_bytes += res->data.size();

@@ -4,7 +4,7 @@ fastweb is a very simple HTTP server for static files.
 
 fastweb is designed to serve a small amount of static data to a large number of clients. On startup, it loads all the files in all the given data directories into memory so they can be served without any unnecessary data copying. It also generates compressed versions of each file for fast responses to clients that support the gzip content encoding.
 
-fastweb supports reloading the dataset or updating the executable with no downtime. To do so, send the existing server process a SIGHUP.
+fastweb supports reloading the dataset and updating the executable with no downtime. To do so, send the existing server process a SIGHUP. It will also check the data directories for changes periodically (by default once per minute) and reload if anything has changed.
 
 ## Building
 

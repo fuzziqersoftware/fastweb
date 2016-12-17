@@ -33,7 +33,7 @@ struct ServerConfiguration {
 };
 
 static ResourceManager::Resource default_not_found_resource(
-    "File not found", "text/plain");
+    "File not found", 0, "text/plain");
 
 void handle_request(struct evhttp_request* req, void* ctx) {
 
@@ -189,6 +189,8 @@ void print_usage(const char* argv0) {
   fprintf(stderr, "  --user=USER : drop privileges to the given user (name or ID)\n");
   fprintf(stderr, "  --index=/NAME : serve the given object for requests to /\n");
   fprintf(stderr, "  --404=/NAME : serve the given object in place of missing objects\n");
+  fprintf(stderr, "  --mtime-check-secs=N : check for changes to files on disk every N seconds and reload if needed\n");
+  fprintf(stderr, "  --mtime-check-secs=0 : don\'t check for changes to files on disk at all\n");
   fprintf(stderr, "all of these are optional, but at least one --fd or --listen option must be given.\n");
   fprintf(stderr, "additionally, at least one data directory must be given.\n");
 }
@@ -206,6 +208,7 @@ int main(int argc, char **argv) {
   int num_bad_options = 0;
   pid_t signal_parent_pid = 0;
   int gzip_compress_level = 6;
+  uint64_t mtime_check_secs = 60;
 
   const char* user = NULL;
   for (int x = 1; x < argc; x++) {
@@ -230,6 +233,9 @@ int main(int argc, char **argv) {
 
     } else if (!strncmp(argv[x], "--gzip-level=", 13)) {
       gzip_compress_level = atoi(&argv[x][13]);
+
+    } else if (!strncmp(argv[x], "--mtime-check-secs=", 19)) {
+      mtime_check_secs = atoi(&argv[x][19]);
 
     } else if (!strncmp(argv[x], "--listen=", 9)) {
       auto parts = split(&argv[x][9], ':');
@@ -284,6 +290,9 @@ int main(int argc, char **argv) {
       state.resource_manager.compressed_resource_bytes(),
       ((float)state.resource_manager.compressed_resource_bytes() / state.resource_manager.resource_bytes()) * 100,
       load_end_time - load_start_time);
+  if (mtime_check_secs) {
+    log(INFO, "checking for changes to these resources every %" PRIu64 " seconds", mtime_check_secs);
+  }
 
   // resolve special resources
   if (!index_resource_name.empty()) {
@@ -385,7 +394,16 @@ int main(int argc, char **argv) {
   sigset_t sigs;
   sigemptyset(&sigs);
   while (!should_exit) {
-    sigsuspend(&sigs);
+    if (mtime_check_secs) {
+      usleep(mtime_check_secs * 1000 * 1000);
+      if (!should_exit && !reload_pid && !should_reload &&
+          state.resource_manager.any_resource_changed()) {
+        should_reload = true;
+        log(INFO, "some files were changed on disk; reloading");
+      }
+    } else {
+      sigsuspend(&sigs);
+    }
 
     if (should_exit) {
       log(INFO, "exit request received");
@@ -403,9 +421,11 @@ int main(int argc, char **argv) {
       } else if (reload_pid == 0) {
         // child process: exec ourself with args to pass the listening fds down
         vector<string> args;
-        args.reserve(2 + listen_fds.size() + data_directories.size());
+        args.reserve(3 + listen_fds.size() + data_directories.size());
         args.emplace_back(argv[0]);
         args.emplace_back(string_printf("--signal-parent=%d", parent_pid));
+        args.emplace_back(string_printf("--mtime-check-secs=%" PRIu64,
+            mtime_check_secs));
         for (int fd : listen_fds) {
           args.emplace_back(string_printf("--fd=%d", fd));
         }

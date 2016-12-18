@@ -178,21 +178,40 @@ void signal_handler(int signum) {
 
 
 void print_usage(const char* argv0) {
-  fprintf(stderr, "usage: %s [options] <data-directories>\n", argv0);
-  fprintf(stderr, "\n");
-  fprintf(stderr, "options:\n");
-  fprintf(stderr, "  --fd=N : accept connections on listening file descriptor N (can be given multiple times)\n");
-  fprintf(stderr, "  --listen=PORT : accept connections on TCP port PORT (can be given multiple times)\n");
-  fprintf(stderr, "  --listen=ADDR:PORT : accept connections on TCP port PORT on interface ADDR (can be given multiple times)\n");
-  fprintf(stderr, "  --listen=SOCKET_PATH : accept connections on Unix socket SOCKET_PATH (can be given multiple times)\n");
-  fprintf(stderr, "  --threads=N : use N threads to serve requests (by default, uses one thread per core)\n");
-  fprintf(stderr, "  --user=USER : drop privileges to the given user (name or ID)\n");
-  fprintf(stderr, "  --index=/NAME : serve the given object for requests to /\n");
-  fprintf(stderr, "  --404=/NAME : serve the given object in place of missing objects\n");
-  fprintf(stderr, "  --mtime-check-secs=N : check for changes to files on disk every N seconds and reload if needed\n");
-  fprintf(stderr, "  --mtime-check-secs=0 : don\'t check for changes to files on disk at all\n");
-  fprintf(stderr, "all of these are optional, but at least one --fd or --listen option must be given.\n");
-  fprintf(stderr, "additionally, at least one data directory must be given.\n");
+  fprintf(stderr,
+      "usage: %s [options] [data-directory [data_directory ...]]\n"
+      "\n"
+      "options:\n"
+      "  --fd=N\n"
+      "      accept connections on listening file descriptor N (can be given\n"
+      "      multiple times)\n"
+      "  --listen=PORT\n"
+      "      listen on TCP port PORT (can be given multiple times)\n"
+      "  --listen=ADDR:PORT\n"
+      "      listen on TCP port PORT on interface ADDR (can be given multiple times)\n"
+      "  --listen=SOCKET_PATH\n"
+      "      listen on Unix socket SOCKET_PATH (can be given multiple times)\n"
+      "  --threads=N\n"
+      "      use N threads to serve requests (default: # of cores)\n"
+      "  --user=USERNAME\n"
+      "      drop privileges to the given user\n"
+      "  --index=/NAME\n"
+      "      serve the given object for requests to /. the object name should be\n"
+      "      relative to one of the data directories.\n"
+      "  --404=/NAME\n"
+      "      serve the given object in place of missing objects (with an HTTP 404\n"
+      "      code). the object name should be relative to one of the data directories.\n"
+      "  --gzip-level=N\n"
+      "      generate compressed gzip versions of all resources with this compression\n"
+      "      level (0-9); default 6. 9 means slowest compression, smallest objects;\n"
+      "      1 means fastest compression, larger objects; 0 means compression disabled\n"
+      "      (this saves memory and startup time but increases network throughput)\n"
+      "  --mtime-check-secs=N\n"
+      "      check for changes to files on disk every N seconds and reload if needed.\n"
+      "      if set to 0, disable automatic reloading.\n"
+      "\n"
+      "at least one --fd or --listen option must be given.\n"
+      "if no data directories are given, the current directory is used.\n", argv0);
 }
 
 int main(int argc, char **argv) {
@@ -271,9 +290,8 @@ int main(int argc, char **argv) {
     return 1;
   }
   if (data_directories.empty()) {
-    log(ERROR, "no data directories given");
-    print_usage(argv[0]);
-    return 1;
+    data_directories.emplace_back("./");
+    log(WARNING, "no data directories given; using the current directory");
   }
 
   // load data

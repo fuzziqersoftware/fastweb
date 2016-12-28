@@ -81,7 +81,7 @@ const ResourceManager::Resource& ResourceManager::get_resource(
 bool ResourceManager::any_resource_changed() const {
   for (const auto& it : this->directory_path_to_mtime) {
     try {
-      if (stat(it.first).st_mtime != it.second) {
+      if ((uint64_t)stat(it.first).st_mtime != it.second) {
         return true;
       }
     } catch (cannot_stat_file& e) {
@@ -91,7 +91,7 @@ bool ResourceManager::any_resource_changed() const {
 
   for (const auto& it : this->path_to_resource) {
     try {
-      if (stat(it.first).st_mtime != it.second->modification_time) {
+      if ((uint64_t)stat(it.first).st_mtime != it.second->modification_time) {
         return true;
       }
     } catch (cannot_stat_file& e) {

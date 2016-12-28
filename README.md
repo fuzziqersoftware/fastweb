@@ -8,6 +8,7 @@ fastweb supports reloading the dataset and updating the executable with no downt
 
 ## Building
 
+0. Make sure libevent and zlib are installed.
 1. Build and install phosg (https://github.com/fuzziqersoftware/phosg).
 2. Run `make`.
 

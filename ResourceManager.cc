@@ -1,5 +1,8 @@
+#define _STDC_FORMAT_MACROS
+
 #include "ResourceManager.hh"
 
+#include <inttypes.h>
 #include <zlib.h>
 
 #include <phosg/Filesystem.hh>
@@ -8,6 +11,15 @@
 #include "MIMEType.hh"
 
 using namespace std;
+
+
+static uint64_t fnv1a64(const string& data) {
+  uint64_t hash = 0xCBF29CE484222325;
+  for (char ch : data) {
+    hash = (hash ^ (uint64_t)ch) * 0x00000100000001B3;
+  }
+  return hash;
+}
 
 
 class inefficient_compression : public runtime_error {
@@ -58,7 +70,9 @@ ResourceManager::ResourceManager() : total_bytes(0), compressed_bytes(0) { }
 ResourceManager::Resource::Resource(const string& data,
     uint64_t modification_time, const char* mime_type, int gzip_compress_level)
     : data(data), gzip_data(), modification_time(modification_time),
-    mime_type(mime_type) {
+    hash(fnv1a64(data)), mime_type(mime_type) {
+  sprintf(this->etag, "%016" PRIX64, this->hash);
+
   // if it's not a redirect and compression is enabled, try to compress it
   if (this->mime_type && gzip_compress_level) {
     try {

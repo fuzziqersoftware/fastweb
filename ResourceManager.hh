@@ -18,6 +18,8 @@ public:
     std::string data;
     std::string gzip_data; // if blank, compressed is larger than original
     uint64_t modification_time;
+    uint64_t hash;
+    char etag[20];
     const char* mime_type; // if NULL, it's a redirect
 
     Resource(const std::string& data, uint64_t modification_time = 0,

@@ -45,11 +45,7 @@ void handle_request(struct evhttp_request* req, void* ctx) {
   struct evkeyvalq* out_headers = evhttp_request_get_output_headers(req);
   evhttp_add_header(out_headers, "Server", "fastweb");
 
-  unique_ptr<struct evbuffer, void(*)(struct evbuffer*)> out_buffer(
-      evbuffer_new(), evbuffer_free);
-
   int code;
-  const char* explanation;
 
   const char* filename = evhttp_request_get_uri(req);
   try {
@@ -58,67 +54,83 @@ void handle_request(struct evhttp_request* req, void* ctx) {
     try {
       res = &state->resource_manager.get_resource(filename);
       code = 200;
-      explanation = "OK";
 
     } catch (const out_of_range& e) {
       // no such resource... check for index first, then fall back to 404 pages
       if (!strcmp(filename, "/") && state->index_resource) {
         res = state->index_resource;
         code = 200;
-        explanation = "OK";
 
       } else if (state->not_found_resource) {
         res = state->not_found_resource;
         code = 404;
-        explanation = "Not Found";
 
       } else {
         res = &default_not_found_resource;
         code = 404;
-        explanation = "Not Found";
       }
     }
 
-    // at this point res, code, and explanation are always valid
+    // at this point res and code are always valid
 
     if (res->mime_type) {
-      evhttp_add_header(out_headers, "Content-Type", res->mime_type);
+      struct evkeyvalq* in_headers = evhttp_request_get_input_headers(req);
 
-      bool gzip_response_added = false;
-      if (!res->gzip_data.empty()) {
-        struct evkeyvalq* in_headers = evhttp_request_get_input_headers(req);
-        const char* in_accept_encoding = evhttp_find_header(in_headers, "Accept-Encoding");
-
-        if (in_accept_encoding &&
-            (strchr(in_accept_encoding, '*') || strstr(in_accept_encoding, "gzip"))) {
-          evhttp_add_header(out_headers, "Content-Encoding", "gzip");
-          evbuffer_add_reference(out_buffer.get(), res->gzip_data.data(),
-              res->gzip_data.size(), NULL, NULL);
-          gzip_response_added = true;
-        }
+      // if the client gave If-None-Match, we might be able to send a 304
+      bool send_not_modified = false;
+      if (code != 404) {
+        const char* in_if_none_match = evhttp_find_header(in_headers,
+            "If-None-Match");
+        send_not_modified = in_if_none_match &&
+            !strcmp(in_if_none_match, res->etag);
       }
+      if (send_not_modified) {
+        evhttp_send_reply(req, 304, "Not Modified", NULL);
 
-      if (!gzip_response_added) {
-        evbuffer_add_reference(out_buffer.get(), res->data.data(),
-            res->data.size(), NULL, NULL);
+      // no ETag, it didn't match, or it's a 404
+      } else {
+        evhttp_add_header(out_headers, "Content-Type", res->mime_type);
+        // don't send ETag for 404s
+        if (code == 200) {
+          evhttp_add_header(out_headers, "ETag", res->etag);
+        }
+
+        bool gzip_response_added = false;
+        if (!res->gzip_data.empty()) {
+          const char* in_accept_encoding = evhttp_find_header(in_headers,
+              "Accept-Encoding");
+
+          if (in_accept_encoding &&
+              (strchr(in_accept_encoding, '*') ||
+               strstr(in_accept_encoding, "gzip"))) {
+            evhttp_add_header(out_headers, "Content-Encoding", "gzip");
+            evbuffer_add_reference(evhttp_request_get_output_buffer(req),
+                res->gzip_data.data(), res->gzip_data.size(), NULL, NULL);
+            gzip_response_added = true;
+          }
+        }
+
+        if (!gzip_response_added) {
+          evbuffer_add_reference(evhttp_request_get_output_buffer(req),
+              res->data.data(), res->data.size(), NULL, NULL);
+        }
+        evhttp_send_reply(req, code, (code == 404) ? "Not Found" : "OK", NULL);
       }
 
     } else {
+      // if the not found page is a redirect, make browsers not cache it by
+      // sending a 302 (temporary) instead of 301 (permanent)
       evhttp_add_header(out_headers, "Location", res->data.c_str());
-
-      // if the not found page is a redirect, make browsers not cache it
-      code = (code == 404) ? 302 : 301;
-      explanation = "Moved Permanently";
+      evhttp_send_reply(req, (code == 404) ? 302 : 301,
+          (code == 404) ? "Temporary Redirect" : "Moved Permanently", NULL);
     }
 
   } catch (...) {
-    evbuffer_drain(out_buffer.get(), evbuffer_get_length(out_buffer.get()));
-    evbuffer_add_reference(out_buffer.get(), "Internal server error", 21, NULL, NULL);
-    code = 500;
-    explanation = "Internal Server Error";
+    struct evbuffer* out_buffer = evhttp_request_get_output_buffer(req);
+    evbuffer_drain(out_buffer, evbuffer_get_length(out_buffer));
+    evbuffer_add_reference(out_buffer, "Internal server error", 21, NULL, NULL);
+    evhttp_send_reply(req, 500, "Internal Server Error", NULL);
   }
-
-  evhttp_send_reply(req, code, explanation, out_buffer.get());
 }
 
 

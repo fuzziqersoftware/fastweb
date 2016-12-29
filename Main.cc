@@ -442,11 +442,17 @@ int main(int argc, char **argv) {
       } else if (reload_pid == 0) {
         // child process: exec ourself with args to pass the listening fds down
         vector<string> args;
-        args.reserve(3 + listen_fds.size() + data_directories.size());
+        args.reserve(5 + listen_fds.size() + data_directories.size());
         args.emplace_back(argv[0]);
         args.emplace_back(string_printf("--signal-parent=%d", parent_pid));
         args.emplace_back(string_printf("--mtime-check-secs=%" PRIu64,
             mtime_check_secs));
+        if (!index_resource_name.empty()) {
+          args.emplace_back("--index=" + index_resource_name);
+        }
+        if (!not_found_resource_name.empty()) {
+          args.emplace_back("--404=" + not_found_resource_name);
+        }
         for (int fd : listen_fds) {
           args.emplace_back(string_printf("--fd=%d", fd));
         }

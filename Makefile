@@ -1,8 +1,8 @@
 OBJECTS=MIMEType.o ResourceManager.o Main.o
 CXX=g++
-CXXFLAGS=-I/usr/local/include -std=c++14 -g -Wall -Werror
-LDFLAGS=-L/usr/local/lib -std=c++14 -pthread
-LDLIBRARIES=-levent -lphosg -lz
+CXXFLAGS=-I/opt/local/include -std=c++14 -g -Wall -Werror
+LDFLAGS=-L/opt/local/lib -std=c++14
+LDLIBRARIES=-levent -lphosg -lz -lpthread
 EXECUTABLE=fastweb
 
 all: $(EXECUTABLE)

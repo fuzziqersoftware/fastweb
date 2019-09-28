@@ -2,8 +2,11 @@
 
 #include <event2/listener.h>
 #include <event2/buffer.h>
+#include <event2/bufferevent_ssl.h>
 #include <event2/http.h>
 #include <inttypes.h>
+#include <openssl/err.h>
+#include <openssl/ssl.h>
 #include <pwd.h>
 #include <signal.h>
 #include <stdlib.h>
@@ -12,6 +15,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <phosg/Filesystem.hh>
 #include <string>
 #include <thread>
 #include <unordered_set>
@@ -27,16 +31,46 @@
 using namespace std;
 
 
+
+bool should_exit = false;
+bool should_reload = false;
+pid_t reload_pid = 0;
+
 struct ServerConfiguration {
+  string user;
+
+  string ssl_cert_filename;
+  string ssl_key_filename;
+  uint64_t ssl_cert_mtime;
+  uint64_t ssl_key_mtime;
+
+  string index_resource_name;
+  string not_found_resource_name;
+  vector<string> data_directories;
+  vector<pair<string, int>> listen_addrs;
+  vector<pair<string, int>> ssl_listen_addrs;
+  unordered_set<int> listen_fds;
+  unordered_set<int> ssl_listen_fds;
+  size_t num_threads;
+  pid_t signal_parent_pid;
+  int gzip_compress_level;
+  uint64_t mtime_check_secs;
+
+  SSL_CTX* ssl_ctx;
+
   const ResourceManager::Resource* index_resource;
   const ResourceManager::Resource* not_found_resource;
   ResourceManager resource_manager;
 
-  ServerConfiguration() : index_resource(NULL), not_found_resource(NULL) { }
+  ServerConfiguration() : num_threads(0), signal_parent_pid(0),
+      gzip_compress_level(6), mtime_check_secs(60), ssl_ctx(NULL),
+      index_resource(NULL), not_found_resource(NULL) { }
 };
 
 static ResourceManager::Resource default_not_found_resource(
     "File not found", 0, "text/plain");
+
+
 
 void handle_request(struct evhttp_request* req, void* ctx) {
 
@@ -134,12 +168,15 @@ void handle_request(struct evhttp_request* req, void* ctx) {
 }
 
 
-bool should_exit = false;
-bool should_reload = false;
-pid_t reload_pid = 0;
 
-void http_server_thread(const unordered_set<int>& listen_fds,
-    const ServerConfiguration& state) {
+static struct bufferevent* on_ssl_connection(struct event_base* base, void* ctx) {
+  SSL_CTX* ssl_ctx = reinterpret_cast<SSL_CTX*>(ctx);
+  SSL* ssl = SSL_new(ssl_ctx);
+  return bufferevent_openssl_socket_new(base, -1, ssl,
+      BUFFEREVENT_SSL_ACCEPTING, BEV_OPT_CLOSE_ON_FREE);
+}
+
+void http_server_thread(const ServerConfiguration& state) {
 
   unique_ptr<struct event_base, void(*)(struct event_base*)> base(
       event_base_new(), event_base_free);
@@ -148,16 +185,33 @@ void http_server_thread(const unordered_set<int>& listen_fds,
     return;
   }
 
-  unique_ptr<struct evhttp, void(*)(struct evhttp*)> server(
-      evhttp_new(base.get()), evhttp_free);
+  vector<unique_ptr<struct evhttp, void(*)(struct evhttp*)>> servers;
+
+  servers.emplace_back(evhttp_new(base.get()), evhttp_free);
+  auto& server = servers.back();
   if (!server) {
     log(ERROR, "error: can\'t create http server");
     return;
   }
-
   evhttp_set_gencb(server.get(), handle_request, (void*)&state);
-  for (int fd : listen_fds) {
+  for (int fd : state.listen_fds) {
     evhttp_accept_socket(server.get(), fd);
+  }
+
+  if (!state.ssl_listen_fds.empty()) {
+    servers.emplace_back(evhttp_new(base.get()), evhttp_free);
+    auto& ssl_server = servers.back();
+    if (!ssl_server) {
+      log(ERROR, "error: can\'t create ssl http server");
+      return;
+    }
+
+    evhttp_set_bevcb(ssl_server.get(), on_ssl_connection, state.ssl_ctx);
+
+    evhttp_set_gencb(ssl_server.get(), handle_request, (void*)&state);
+    for (int fd : state.ssl_listen_fds) {
+      evhttp_accept_socket(ssl_server.get(), fd);
+    }
   }
 
   auto check_for_thread_exit = [](evutil_socket_t fd, short what, void* ctx) {
@@ -200,12 +254,23 @@ void print_usage(const char* argv0) {
       "  --fd=N\n"
       "      accept connections on listening file descriptor N (can be given\n"
       "      multiple times)\n"
+      "  --ssl-fd=N\n"
+      "      accept TLS connections on listening file descriptor N (can be\n"
+      "      given multiple times)\n"
       "  --listen=PORT\n"
       "      listen on TCP port PORT (can be given multiple times)\n"
       "  --listen=ADDR:PORT\n"
       "      listen on TCP port PORT on interface ADDR (can be given multiple times)\n"
       "  --listen=SOCKET_PATH\n"
       "      listen on Unix socket SOCKET_PATH (can be given multiple times)\n"
+      "  --ssl-listen=...\n"
+      "      listen for TLS connections (same formats as for --listen)\n"
+      "  --ssl-cert=FILENAME\n"
+      "      load SSL certificate from this .pem file (required if --ssl-fd or\n"
+      "      --ssl-listen is given)\n"
+      "  --ssl-key=FILENAME\n"
+      "      load SSL private key from this .pem file (required if --ssl-fd or\n"
+      "      --ssl-listen is given)\n"
       "  --threads=N\n"
       "      use N threads to serve requests (default: # of cores)\n"
       "  --user=USERNAME\n"
@@ -223,7 +288,8 @@ void print_usage(const char* argv0) {
       "      (this saves memory and startup time but increases network throughput)\n"
       "  --mtime-check-secs=N\n"
       "      check for changes to files on disk every N seconds and reload if needed.\n"
-      "      if set to 0, disable automatic reloading.\n"
+      "      this also enables monitoring for the SSL certificate and private key.\n"
+      "      if set to 0, disable all automatic reloading.\n"
       "\n"
       "at least one --fd or --listen option must be given.\n"
       "if no data directories are given, the current directory is used.\n", argv0);
@@ -233,64 +299,73 @@ int main(int argc, char **argv) {
 
   log(INFO, "fuzziqer software fastweb");
 
-  string index_resource_name;
-  string not_found_resource_name;
-  vector<string> data_directories;
-  vector<pair<string, int>> listen_addrs;
-  unordered_set<int> listen_fds;
-  size_t num_threads = 0;
-  int num_bad_options = 0;
-  pid_t signal_parent_pid = 0;
-  int gzip_compress_level = 6;
-  uint64_t mtime_check_secs = 60;
+  ServerConfiguration state;
+  size_t num_bad_options = 0;
 
-  const char* user = NULL;
+  auto add_listen_addr = [&](const char* arg, bool is_ssl) {
+    auto& addrs = is_ssl ? state.ssl_listen_addrs : state.listen_addrs;
+    auto parts = split(arg, ':');
+    if (parts.size() == 1) {
+      if (!parts[0].empty() && (parts[0][0] == '/')) {
+        // it's a unix socket
+        addrs.emplace_back(make_pair(parts[0], 0));
+      } else {
+        // it's a port number
+        addrs.emplace_back(make_pair("", stoi(parts[0])));
+      }
+    } else if (parts.size() == 2) {
+      // it's an addr:port pair
+      addrs.emplace_back(make_pair(parts[0], stoi(parts[1])));
+    } else {
+      log(ERROR, "bad netloc in command line: %s", arg);
+      num_bad_options++;
+    }
+  };
+
   for (int x = 1; x < argc; x++) {
-
     if (!strncmp(argv[x], "--signal-parent=", 16)) {
-      signal_parent_pid = atoi(&argv[x][16]);
+      state.signal_parent_pid = atoi(&argv[x][16]);
 
     } else if (!strncmp(argv[x], "--fd=", 5)) {
-      listen_fds.emplace(atoi(&argv[x][5]));
+      state.listen_fds.emplace(atoi(&argv[x][5]));
+
+    } else if (!strncmp(argv[x], "--ssl-fd=", 9)) {
+      state.ssl_listen_fds.emplace(atoi(&argv[x][9]));
+
+    } else if (!strncmp(argv[x], "--ssl-cert=", 11)) {
+      state.ssl_cert_filename = &argv[x][11];
+      state.ssl_cert_mtime = stat(state.ssl_cert_filename).st_mtime;
+
+    } else if (!strncmp(argv[x], "--ssl-key=", 10)) {
+      state.ssl_key_filename = &argv[x][10];
+      state.ssl_key_mtime = stat(state.ssl_key_filename).st_mtime;
 
     } else if (!strncmp(argv[x], "--threads=", 10)) {
-      num_threads = atoi(&argv[x][10]);
+      state.num_threads = atoi(&argv[x][10]);
 
     } else if (!strncmp(argv[x], "--user=", 7)) {
-      user = &argv[x][7];
+      state.user = &argv[x][7];
 
     } else if (!strncmp(argv[x], "--index=", 8)) {
-      index_resource_name = &argv[x][8];
+      state.index_resource_name = &argv[x][8];
 
     } else if (!strncmp(argv[x], "--404=", 6)) {
-      not_found_resource_name = &argv[x][6];
+      state.not_found_resource_name = &argv[x][6];
 
     } else if (!strncmp(argv[x], "--gzip-level=", 13)) {
-      gzip_compress_level = atoi(&argv[x][13]);
+      state.gzip_compress_level = atoi(&argv[x][13]);
 
     } else if (!strncmp(argv[x], "--mtime-check-secs=", 19)) {
-      mtime_check_secs = atoi(&argv[x][19]);
+      state.mtime_check_secs = atoi(&argv[x][19]);
 
     } else if (!strncmp(argv[x], "--listen=", 9)) {
-      auto parts = split(&argv[x][9], ':');
-      if (parts.size() == 1) {
-        if (!parts[0].empty() && (parts[0][0] == '/')) {
-          // it's a unix socket
-          listen_addrs.emplace_back(make_pair(parts[0], 0));
-        } else {
-          // it's a port number
-          listen_addrs.emplace_back(make_pair("", stoi(parts[0])));
-        }
-      } else if (parts.size() == 2) {
-        // it's an addr:port pair
-        listen_addrs.emplace_back(make_pair(parts[0], stoi(parts[1])));
-      } else {
-        log(ERROR, "bad netloc in command line: %s", &argv[x][9]);
-        num_bad_options++;
-      }
+      add_listen_addr(&argv[x][9], false);
+
+    } else if (!strncmp(argv[x], "--ssl-listen=", 9)) {
+      add_listen_addr(&argv[x][13], true);
 
     } else {
-      data_directories.emplace_back(argv[x]);
+      state.data_directories.emplace_back(argv[x]);
     }
   }
 
@@ -299,21 +374,27 @@ int main(int argc, char **argv) {
     print_usage(argv[0]);
     return 1;
   }
-  if (listen_fds.empty() && listen_addrs.empty()) {
+  if (state.listen_fds.empty() && state.ssl_listen_fds.empty() &&
+      state.listen_addrs.empty() && state.ssl_listen_addrs.empty()) {
     log(ERROR, "no listening sockets or addresses given");
     print_usage(argv[0]);
     return 1;
   }
-  if (data_directories.empty()) {
-    data_directories.emplace_back("./");
+  if (state.data_directories.empty()) {
+    state.data_directories.emplace_back("./");
     log(WARNING, "no data directories given; using the current directory");
+  }
+  if ((!state.ssl_listen_fds.empty() || !state.ssl_listen_addrs.empty()) &&
+      (state.ssl_cert_filename.empty() || state.ssl_key_filename.empty())) {
+    log(ERROR, "an SSL certificate and key must be given if SSL listen sockets or addresses are given");
+    print_usage(argv[0]);
+    return 1;
   }
 
   // load data
   uint64_t load_start_time = now();
-  ServerConfiguration state;
-  for (const auto& directory : data_directories) {
-    state.resource_manager.add_directory(directory, gzip_compress_level);
+  for (const auto& directory : state.data_directories) {
+    state.resource_manager.add_directory(directory, state.gzip_compress_level);
   }
   uint64_t load_end_time = now();
   log(INFO, "loaded %zu resources, including %zu files (%zu bytes, %zu compressed, %g%%), in %" PRIu64 " microseconds",
@@ -323,56 +404,89 @@ int main(int argc, char **argv) {
       state.resource_manager.compressed_resource_bytes(),
       ((float)state.resource_manager.compressed_resource_bytes() / state.resource_manager.resource_bytes()) * 100,
       load_end_time - load_start_time);
-  if (mtime_check_secs) {
-    log(INFO, "checking for changes to these resources every %" PRIu64 " seconds", mtime_check_secs);
+  if (state.mtime_check_secs) {
+    log(INFO, "checking for changes to these resources every %" PRIu64 " seconds", state.mtime_check_secs);
   }
 
   // resolve special resources
-  if (!index_resource_name.empty()) {
+  if (!state.index_resource_name.empty()) {
     try {
-      state.index_resource = &state.resource_manager.get_resource(index_resource_name);
+      state.index_resource = &state.resource_manager.get_resource(state.index_resource_name);
     } catch (const out_of_range& e) {
-      log(ERROR, "index resource %s does not exist", index_resource_name.c_str());
+      log(ERROR, "index resource %s does not exist", state.index_resource_name.c_str());
       return 2;
     }
   }
-  if (!not_found_resource_name.empty()) {
+  if (!state.not_found_resource_name.empty()) {
     try {
-      state.not_found_resource = &state.resource_manager.get_resource(not_found_resource_name);
+      state.not_found_resource = &state.resource_manager.get_resource(state.not_found_resource_name);
     } catch (const out_of_range& e) {
-      log(ERROR, "404 resource %s does not exist", not_found_resource_name.c_str());
+      log(ERROR, "404 resource %s does not exist", state.not_found_resource_name.c_str());
       return 2;
     }
   }
 
   // open listening sockets
-  for (const auto& listen_addr : listen_addrs) {
+  for (int ssl = 0; ssl < 2; ssl++) {
+    for (const auto& listen_addr : (ssl ? state.ssl_listen_addrs : state.listen_addrs)) {
+      int fd = listen(listen_addr.first, listen_addr.second, SOMAXCONN);
+      if (fd < 0) {
+        log(ERROR, "can\'t open listening socket; addr=%s, port=%d",
+            listen_addr.first.c_str(), listen_addr.second);
+        return 2;
+      }
 
-    int fd = listen(listen_addr.first, listen_addr.second, SOMAXCONN);
-    if (fd < 0) {
-      log(ERROR, "can\'t open listening socket; addr=%s, port=%d",
-          listen_addr.first.c_str(), listen_addr.second);
+      evutil_make_socket_nonblocking(fd);
+      if (ssl) {
+        state.ssl_listen_fds.emplace(fd);
+      } else {
+        state.listen_fds.emplace(fd);
+      }
+
+      log(INFO, "opened listening socket %d: addr=%s, port=%d",
+          fd, listen_addr.first.c_str(), listen_addr.second);
+    }
+  }
+
+  // load the ssl context if needed
+  if (!state.ssl_listen_fds.empty()) {
+    SSL_load_error_strings();
+    OpenSSL_add_ssl_algorithms();
+
+    state.ssl_ctx = SSL_CTX_new(TLS_method());
+    if (!state.ssl_ctx) {
+      log(ERROR, "can\'t create openssl context");
+      ERR_print_errors_fp(stderr);
       return 2;
     }
-
-    evutil_make_socket_nonblocking(fd);
-    listen_fds.emplace(fd);
-
-    log(INFO, "opened listening socket %d: addr=%s, port=%d",
-        fd, listen_addr.first.c_str(), listen_addr.second);
+    SSL_CTX_set_ecdh_auto(state.ssl_ctx, 1);
+    if (SSL_CTX_use_certificate_file(state.ssl_ctx,
+        state.ssl_cert_filename.c_str(), SSL_FILETYPE_PEM) <= 0) {
+      log(ERROR, "can\'t open %s", state.ssl_cert_filename.c_str());
+      ERR_print_errors_fp(stderr);
+      return 2;
+    }
+    log(INFO, "loaded ssl certificate from %s", state.ssl_cert_filename.c_str());
+    if (SSL_CTX_use_PrivateKey_file(state.ssl_ctx,
+        state.ssl_key_filename.c_str(), SSL_FILETYPE_PEM) <= 0) {
+      log(ERROR, "can\'t open %s", state.ssl_key_filename.c_str());
+      ERR_print_errors_fp(stderr);
+      return 2;
+    }
+    log(INFO, "loaded ssl private key from %s", state.ssl_key_filename.c_str());
   }
 
   // drop privileges if requested
-  if (user) {
+  if (!state.user.empty()) {
     if ((getuid() != 0) || (getgid() != 0)) {
-      log(ERROR, "not started as root; can\'t switch to user %s", user);
+      log(ERROR, "not started as root; can\'t switch to user %s", state.user.c_str());
       return 2;
     }
 
-    struct passwd* pw = getpwnam(user);
+    struct passwd* pw = getpwnam(state.user.c_str());
     if (!pw) {
       string error = string_for_error(errno);
-      log(ERROR, "user %s not found (%s)", user, error.c_str());
+      log(ERROR, "user %s not found (%s)", state.user.c_str(), error.c_str());
       return 2;
     }
 
@@ -386,20 +500,20 @@ int main(int argc, char **argv) {
       log(ERROR, "can\'t switch to user %d (%s)", pw->pw_uid, error.c_str());
       return 2;
     }
-    log(INFO, "switched to user %s (%d:%d)", user, pw->pw_uid, pw->pw_gid);
+    log(INFO, "switched to user %s (%d:%d)",  state.user.c_str(), pw->pw_uid,
+        pw->pw_gid);
   }
 
   // start server threads
-  if (num_threads == 0) {
-    num_threads = thread::hardware_concurrency();
+  if (state.num_threads == 0) {
+    state.num_threads = thread::hardware_concurrency();
   }
 
   vector<thread> server_threads;
-  while (server_threads.size() < num_threads) {
-    server_threads.emplace_back(http_server_thread, cref(listen_fds),
-        cref(state));
+  while (server_threads.size() < state.num_threads) {
+    server_threads.emplace_back(http_server_thread, cref(state));
   }
-  log(INFO, "started %d server threads", num_threads);
+  log(INFO, "started %d server threads", state.num_threads);
 
   // register signal handlers
   signal(SIGPIPE, SIG_IGN);
@@ -409,12 +523,12 @@ int main(int argc, char **argv) {
   signal(SIGCHLD, signal_handler);
 
   // kill the parent if needed
-  if (signal_parent_pid) {
-    if (kill(signal_parent_pid, SIGTERM)) {
-      log(ERROR, "failed to kill parent process %d", signal_parent_pid);
+  if (state.signal_parent_pid) {
+    if (kill(state.signal_parent_pid, SIGTERM)) {
+      log(ERROR, "failed to kill parent process %d", state.signal_parent_pid);
       return 1;
     }
-    log(INFO, "killed parent process %d", signal_parent_pid);
+    log(INFO, "killed parent process %d", state.signal_parent_pid);
   }
 
   // reloading is implemented as follows:
@@ -427,10 +541,16 @@ int main(int argc, char **argv) {
   sigset_t sigs;
   sigemptyset(&sigs);
   while (!should_exit) {
-    if (mtime_check_secs) {
-      usleep(mtime_check_secs * 1000 * 1000);
-      if (!should_exit && !reload_pid && !should_reload &&
-          state.resource_manager.any_resource_changed()) {
+    if (state.mtime_check_secs) {
+      usleep(state.mtime_check_secs * 1000 * 1000);
+
+      bool files_changed = state.resource_manager.any_resource_changed();
+      if (!files_changed && state.ssl_ctx) {
+        files_changed |= (static_cast<uint64_t>(stat(state.ssl_cert_filename).st_mtime) != state.ssl_cert_mtime);
+        files_changed |= (static_cast<uint64_t>(stat(state.ssl_key_filename).st_mtime) != state.ssl_key_mtime);
+      }
+
+      if (!should_exit && !reload_pid && !should_reload && files_changed) {
         should_reload = true;
         log(INFO, "some files were changed on disk; reloading");
       }
@@ -454,24 +574,35 @@ int main(int argc, char **argv) {
       } else if (reload_pid == 0) {
         // child process: exec ourself with args to pass the listening fds down
         vector<string> args;
-        args.reserve(5 + listen_fds.size() + data_directories.size());
         args.emplace_back(argv[0]);
         args.emplace_back(string_printf("--signal-parent=%d", parent_pid));
         args.emplace_back(string_printf("--mtime-check-secs=%" PRIu64,
-            mtime_check_secs));
-        if (!index_resource_name.empty()) {
-          args.emplace_back("--index=" + index_resource_name);
+            state.mtime_check_secs));
+        args.emplace_back(string_printf("--threads=%" PRIu64,
+            state.num_threads));
+        if (!state.index_resource_name.empty()) {
+          args.emplace_back("--index=" + state.index_resource_name);
         }
-        if (!not_found_resource_name.empty()) {
-          args.emplace_back("--404=" + not_found_resource_name);
+        if (!state.not_found_resource_name.empty()) {
+          args.emplace_back("--404=" + state.not_found_resource_name);
         }
-        for (int fd : listen_fds) {
+        if (!state.ssl_cert_filename.empty()) {
+          args.emplace_back("--ssl-cert=" + state.ssl_cert_filename);
+        }
+        if (!state.ssl_key_filename.empty()) {
+          args.emplace_back("--ssl-key=" + state.ssl_key_filename);
+        }
+        for (int fd : state.listen_fds) {
           args.emplace_back(string_printf("--fd=%d", fd));
         }
-        for (const string& directory : data_directories) {
+        for (int fd : state.ssl_listen_fds) {
+          args.emplace_back(string_printf("--ssl-fd=%d", fd));
+        }
+        for (const string& directory : state.data_directories) {
           args.emplace_back(directory);
         }
-
+        // note: we don't have to pass --user because we're forking, so the
+        // child process will have the same user already
         vector<char*> argv;
         argv.reserve(args.size() + 1);
         for (const string& arg : args) {
@@ -519,11 +650,20 @@ int main(int argc, char **argv) {
   }
 
   // close listening sockets, then wait for worker threads to terminate
-  for (int fd : listen_fds) {
+  for (int fd : state.listen_fds) {
+    close(fd);
+  }
+  for (int fd : state.ssl_listen_fds) {
     close(fd);
   }
   for (auto& t : server_threads) {
     t.join();
+  }
+
+  // clean up openssl stuff
+  if (state.ssl_ctx) {
+    SSL_CTX_free(state.ssl_ctx);
+    EVP_cleanup();
   }
 
   log(INFO, "all threads exited");

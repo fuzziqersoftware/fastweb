@@ -2,7 +2,7 @@
 
 fastweb is a very simple HTTP and HTTPS server for static files.
 
-fastweb is designed to serve a small amount of static data to a large number of clients. On startup, it loads all the files in all the given data directories into memory so they can be served without any unnecessary data copying. It also generates compressed versions of each file for fast responses to clients that support the gzip content encoding.
+fastweb is designed to serve a small amount of rarely-changing data to a large number of clients. On startup, it loads all the files in all the given data directories into memory so they can be served without any unnecessary data copying. It also generates compressed versions of each file for fast responses to clients that support the gzip content encoding.
 
 fastweb supports reloading the dataset and updating the executable with no downtime. To do so, send the existing server process a SIGHUP. It will also check the data directories and SSL certificate and key (if provided) for changes periodically and reload if anything has changed.
 
@@ -44,6 +44,8 @@ If you use Let's Encrypt (and Certbot), you can set up a deploy hook so that fas
     done
 
 This script only works if you have a single certificate, but that certificate can be for multiple domains.
+
+During the reload procedure, fastweb cannot get root privileges again. This means that if reloading is enabled (as it is by default) and you use the --user option, then the SSL key and certificate must be readable by the specified user, and not only by root. (Similarly, all files in the data directories must be readable by the specified user.)
 
 ### Example
 

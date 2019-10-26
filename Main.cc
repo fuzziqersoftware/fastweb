@@ -247,52 +247,71 @@ void signal_handler(int signum) {
 
 
 void print_usage(const char* argv0) {
-  fprintf(stderr,
-      "usage: %s [options] [data-directory [data_directory ...]]\n"
-      "\n"
-      "options:\n"
-      "  --fd=N\n"
-      "      accept connections on listening file descriptor N (can be given\n"
-      "      multiple times)\n"
-      "  --ssl-fd=N\n"
-      "      accept TLS connections on listening file descriptor N (can be\n"
-      "      given multiple times)\n"
-      "  --listen=PORT\n"
-      "      listen on TCP port PORT (can be given multiple times)\n"
-      "  --listen=ADDR:PORT\n"
-      "      listen on TCP port PORT on interface ADDR (can be given multiple times)\n"
-      "  --listen=SOCKET_PATH\n"
-      "      listen on Unix socket SOCKET_PATH (can be given multiple times)\n"
-      "  --ssl-listen=...\n"
-      "      listen for TLS connections (same formats as for --listen)\n"
-      "  --ssl-cert=FILENAME\n"
-      "      load SSL certificate from this .pem file (required if --ssl-fd or\n"
-      "      --ssl-listen is given)\n"
-      "  --ssl-key=FILENAME\n"
-      "      load SSL private key from this .pem file (required if --ssl-fd or\n"
-      "      --ssl-listen is given)\n"
-      "  --threads=N\n"
-      "      use N threads to serve requests (default: # of cores)\n"
-      "  --user=USERNAME\n"
-      "      drop privileges to the given user\n"
-      "  --index=/NAME\n"
-      "      serve the given object for requests to /. the object name should be\n"
-      "      relative to one of the data directories.\n"
-      "  --404=/NAME\n"
-      "      serve the given object in place of missing objects (with an HTTP 404\n"
-      "      code). the object name should be relative to one of the data directories.\n"
-      "  --gzip-level=N\n"
-      "      generate compressed gzip versions of all resources with this compression\n"
-      "      level (0-9); default 6. 9 means slowest compression, smallest objects;\n"
-      "      1 means fastest compression, larger objects; 0 means compression disabled\n"
-      "      (this saves memory and startup time but increases network throughput)\n"
-      "  --mtime-check-secs=N\n"
-      "      check for changes to files on disk every N seconds and reload if needed.\n"
-      "      this also enables monitoring for the SSL certificate and private key.\n"
-      "      if set to 0, disable all automatic reloading.\n"
-      "\n"
-      "at least one --fd or --listen option must be given.\n"
-      "if no data directories are given, the current directory is used.\n", argv0);
+  fprintf(stderr, "\
+Usage: %s [options] [data-directory [data_directory ...]]\n\
+\n\
+Options:\n\
+  --fd=N\n\
+      Accept unencrypted connections on listening file descriptor N. This\n\
+      option can be given multiple times.\n\
+  --ssl-fd=N\n\
+      Accept TLS connections on listening file descriptor N. This option can\n\
+      be given multiple times)\n\
+  --listen=PORT\n\
+      Listen on TCP port PORT. This option can be given multiple times. You\n\
+      will need to use sudo or otherwise gain root privileges to listen on\n\
+      ports less than 1024.\n\
+  --listen=ADDR:PORT\n\
+      Listen on TCP port PORT on interface ADDR. This option can be given\n\
+      multiple times. Like the above, you will need sudo for ports < 1024.\n\
+  --listen=SOCKET_PATH\n\
+      Listen on Unix socket SOCKET_PATH. This option can be given multiple\n\
+      times.\n\
+  --ssl-listen=...\n\
+      Listen for TLS connections. This option has the same behaviors as\n\
+      --listen, but accepted connections will be treated as encrypted.\n\
+  --ssl-cert=FILENAME\n\
+      Load SSL certificate from this .pem file. This option is required if\n\
+      --ssl-fd or --ssl-listen is given.\n\
+  --ssl-key=FILENAME\n\
+      Load SSL private key from this .pem file. This option is required if\n\
+      --ssl-fd or --ssl-listen is given)\n\
+  --threads=N\n\
+      Use N threads to serve requests. If omitted, the default is to use as\n\
+      many threads as there are CPU cores in the system.\n\
+  --user=USERNAME\n\
+      Drop privileges to the given user before serving any requests. If this\n\
+      option is given and reloading is enabled, the SSL certificate and key and\n\
+      all files in the data directories must be readable by the specified user.\n\
+      In contrast, ports < 1024 may still be used if --user is given and do not\n\
+      cause any problems when reloading because the already-open file\n\
+      descriptor is passed directly to the new process during reloading.\n\
+  --index=/NAME\n\
+      Serve the given object for requests to /. The object name should be\n\
+      relative to one of the data directories. Usually something like\n\
+      /index.html is appropriate here.\n\
+  --404=/NAME\n\
+      Serve the given object in place of missing objects (but serve it with an\n\
+      HTTP 404 response code instead of 200). Line --index, the object name\n\
+      should be relative to one of the data directories.\n\
+  --gzip-level=N\n\
+      Generate gzip-compressed versions of all resources with this compression\n\
+      level (0-9). 9 gives the slowest compression and the smallest objects;\n\
+      1 gives the fastest compression and much larger objects. 0 disables\n\
+      compression entirely (this saves memory and startup time but increases\n\
+      network throughput). In some rare cases, the compressed version of a file\n\
+      is actually larger than the original file; when this happens, fastweb\n\
+      serves the uncompressed file even when compression is enabled. The\n\
+      default compression level is 6.\n\
+  --mtime-check-secs=N\n\
+      Check for changes to files on disk every N seconds and reload if needed.\n\
+      This also enables monitoring for changes to the SSL certificate and\n\
+      private key. If set to 0, disable all automatic reloading. The default is\n\
+      to check for changes every 5 seconds. (These checks occur in the main\n\
+      thread and do not block any request processing.)\n\
+\n\
+At least one --fd/--listen or --ssl-fd/--ssl-listen option must be given.\n\
+If no data directories are given, the current directory is used.\n", argv0);
 }
 
 int main(int argc, char **argv) {

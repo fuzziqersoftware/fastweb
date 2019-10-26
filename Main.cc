@@ -478,6 +478,7 @@ int main(int argc, char **argv) {
       ERR_print_errors_fp(stderr);
       return 2;
     }
+    SSL_CTX_set_min_proto_version(state.ssl_ctx, TLS1_2_VERSION);
     SSL_CTX_set_ecdh_auto(state.ssl_ctx, 1);
     if (SSL_CTX_use_certificate_file(state.ssl_ctx,
         state.ssl_cert_filename.c_str(), SSL_FILETYPE_PEM) <= 0) {

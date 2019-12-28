@@ -44,15 +44,19 @@ struct ServerConfiguration {
   uint64_t ssl_cert_mtime;
   uint64_t ssl_key_mtime;
 
+  vector<string> data_directories;
   string index_resource_name;
   string not_found_resource_name;
-  vector<string> data_directories;
+  bool log_requests;
+
   vector<pair<string, int>> listen_addrs;
   vector<pair<string, int>> ssl_listen_addrs;
   unordered_set<int> listen_fds;
   unordered_set<int> ssl_listen_fds;
   size_t num_threads;
+
   pid_t signal_parent_pid;
+
   int gzip_compress_level;
   uint64_t mtime_check_secs;
 
@@ -62,9 +66,9 @@ struct ServerConfiguration {
   const ResourceManager::Resource* not_found_resource;
   ResourceManager resource_manager;
 
-  ServerConfiguration() : num_threads(0), signal_parent_pid(0),
-      gzip_compress_level(6), mtime_check_secs(60), ssl_ctx(NULL),
-      index_resource(NULL), not_found_resource(NULL) { }
+  ServerConfiguration() : log_requests(false), num_threads(0),
+      signal_parent_pid(0), gzip_compress_level(6), mtime_check_secs(60),
+      ssl_ctx(NULL), index_resource(NULL), not_found_resource(NULL) { }
 };
 
 static ResourceManager::Resource default_not_found_resource(
@@ -72,12 +76,45 @@ static ResourceManager::Resource default_not_found_resource(
 
 
 
+static void print_evbuffer_contents(struct evbuffer* buf) {
+  // warning: this is super slow; it copies the data
+  size_t size = evbuffer_get_length(buf);
+  if (size) {
+    string data(size, 0);
+    evbuffer_copyout(buf, const_cast<char*>(data.data()), data.size());
+    print_data(stderr, data);
+  }
+}
+
 void handle_request(struct evhttp_request* req, void* ctx) {
 
   const ServerConfiguration* state = (const ServerConfiguration*)ctx;
 
   struct evkeyvalq* out_headers = evhttp_request_get_output_headers(req);
   evhttp_add_header(out_headers, "Server", "fastweb");
+
+  string log_prefix;
+  if (state->log_requests) {
+    static const unordered_map<enum evhttp_cmd_type, const char*> name_for_method({
+      {EVHTTP_REQ_GET,     "GET"},
+      {EVHTTP_REQ_POST,    "POST"},
+      {EVHTTP_REQ_HEAD,    "HEAD"},
+      {EVHTTP_REQ_PUT,     "PUT"},
+      {EVHTTP_REQ_DELETE,  "DELETE"},
+      {EVHTTP_REQ_OPTIONS, "OPTIONS"},
+      {EVHTTP_REQ_TRACE,   "TRACE"},
+      {EVHTTP_REQ_CONNECT, "CONNECT"},
+      {EVHTTP_REQ_PATCH,   "PATCH"},
+    });
+
+    try {
+      log_prefix = name_for_method.at(evhttp_request_get_command(req));
+    } catch (const out_of_range&) {
+      log_prefix = "__UNKNOWN_METHOD__";
+    }
+    log_prefix += ' ';
+    log_prefix += evhttp_request_get_uri(req);
+  }
 
   int code;
 
@@ -119,6 +156,7 @@ void handle_request(struct evhttp_request* req, void* ctx) {
             !strcmp(in_if_none_match, res->etag);
       }
       if (send_not_modified) {
+        code = 304;
         evhttp_send_reply(req, 304, "Not Modified", NULL);
 
       // no ETag, it didn't match, or it's a 404
@@ -159,11 +197,24 @@ void handle_request(struct evhttp_request* req, void* ctx) {
           (code == 404) ? "Temporary Redirect" : "Moved Permanently", NULL);
     }
 
-  } catch (...) {
+    if (state->log_requests) {
+      log(INFO, "request: %s => %d (res=%s)", log_prefix.c_str(),
+          code, res ? res->etag : 0);
+      struct evbuffer* buf = evhttp_request_get_input_buffer(req);
+      print_evbuffer_contents(buf);
+    }
+
+  } catch (const exception& e) {
     struct evbuffer* out_buffer = evhttp_request_get_output_buffer(req);
     evbuffer_drain(out_buffer, evbuffer_get_length(out_buffer));
     evbuffer_add_reference(out_buffer, "Internal server error", 21, NULL, NULL);
     evhttp_send_reply(req, 500, "Internal Server Error", NULL);
+
+    if (state->log_requests) {
+      log(INFO, "request: %s => 500 (%s)", log_prefix.c_str(), e.what());
+      struct evbuffer* buf = evhttp_request_get_input_buffer(req);
+      print_evbuffer_contents(buf);
+    }
   }
 }
 
@@ -309,6 +360,9 @@ Options:\n\
       private key. If set to 0, disable all automatic reloading. The default is\n\
       to check for changes every 5 seconds. (These checks occur in the main\n\
       thread and do not block any request processing.)\n\
+  --log-requests\n\
+      Log all incoming requests and the response codes sent to them. Be warned:\n\
+      this will make fastweb significantly less fast.\n\
 \n\
 At least one --fd/--listen or --ssl-fd/--ssl-listen option must be given.\n\
 If no data directories are given, the current directory is used.\n", argv0);
@@ -382,6 +436,9 @@ int main(int argc, char **argv) {
 
     } else if (!strncmp(argv[x], "--ssl-listen=", 9)) {
       add_listen_addr(&argv[x][13], true);
+
+    } else if (!strcmp(argv[x], "--log-requests")) {
+      state.log_requests = true;
 
     } else {
       state.data_directories.emplace_back(argv[x]);

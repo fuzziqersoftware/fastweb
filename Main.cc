@@ -40,8 +40,10 @@ struct ServerConfiguration {
   string user;
 
   string ssl_cert_filename;
+  string ssl_ca_cert_filename;
   string ssl_key_filename;
   uint64_t ssl_cert_mtime;
+  uint64_t ssl_ca_cert_mtime;
   uint64_t ssl_key_mtime;
 
   vector<string> data_directories;
@@ -324,6 +326,9 @@ Options:\n\
   --ssl-cert=FILENAME\n\
       Load SSL certificate from this .pem file. This option is required if\n\
       --ssl-fd or --ssl-listen is given.\n\
+  --ssl-ca-cert=FILENAME\n\
+      Load SSL CA certificate from this .pem file. This option is not required\n\
+      if --ssl-fd or --ssl-listen is given, but should be used in most cases.\n\
   --ssl-key=FILENAME\n\
       Load SSL private key from this .pem file. This option is required if\n\
       --ssl-fd or --ssl-listen is given)\n\
@@ -409,6 +414,10 @@ int main(int argc, char **argv) {
       state.ssl_cert_filename = &argv[x][11];
       state.ssl_cert_mtime = stat(state.ssl_cert_filename).st_mtime;
 
+    } else if (!strncmp(argv[x], "--ssl-ca-cert=", 14)) {
+      state.ssl_ca_cert_filename = &argv[x][14];
+      state.ssl_ca_cert_mtime = stat(state.ssl_ca_cert_filename).st_mtime;
+
     } else if (!strncmp(argv[x], "--ssl-key=", 10)) {
       state.ssl_key_filename = &argv[x][10];
       state.ssl_key_mtime = stat(state.ssl_key_filename).st_mtime;
@@ -465,6 +474,10 @@ int main(int argc, char **argv) {
     log(ERROR, "an SSL certificate and key must be given if SSL listen sockets or addresses are given");
     print_usage(argv[0]);
     return 1;
+  }
+  if ((!state.ssl_listen_fds.empty() || !state.ssl_listen_addrs.empty()) &&
+      state.ssl_ca_cert_filename.empty()) {
+    log(WARNING, "no CA certificate filename given; some clients may reject this server\'s certificate");
   }
 
   // load data
@@ -536,7 +549,12 @@ int main(int argc, char **argv) {
       return 2;
     }
     SSL_CTX_set_min_proto_version(state.ssl_ctx, TLS1_2_VERSION);
+    SSL_CTX_set_cipher_list(state.ssl_ctx, "ECDH+AESGCM:ECDH+CHACHA20:DH+AESGCM:ECDH+AES256:DH+AES256:ECDH+AES128:DH+AES:RSA+AESGCM:RSA+AES:!aNULL:!MD5:!DSS:!AESCCM:!RSA");
     SSL_CTX_set_ecdh_auto(state.ssl_ctx, 1);
+    if (!state.ssl_ca_cert_filename.empty()) {
+      SSL_CTX_load_verify_locations(state.ssl_ctx, state.ssl_ca_cert_filename.c_str(), NULL);
+      log(INFO, "loaded ssl ca certificate from %s", state.ssl_ca_cert_filename.c_str());
+    }
     if (SSL_CTX_use_certificate_file(state.ssl_ctx,
         state.ssl_cert_filename.c_str(), SSL_FILETYPE_PEM) <= 0) {
       log(ERROR, "can\'t open %s", state.ssl_cert_filename.c_str());
@@ -624,6 +642,8 @@ int main(int argc, char **argv) {
       bool files_changed = state.resource_manager.any_resource_changed();
       if (!files_changed && state.ssl_ctx) {
         files_changed |= (static_cast<uint64_t>(stat(state.ssl_cert_filename).st_mtime) != state.ssl_cert_mtime);
+        files_changed |= !state.ssl_ca_cert_filename.empty() && (
+            static_cast<uint64_t>(stat(state.ssl_ca_cert_filename).st_mtime) != state.ssl_ca_cert_mtime);
         files_changed |= (static_cast<uint64_t>(stat(state.ssl_key_filename).st_mtime) != state.ssl_key_mtime);
       }
 
@@ -665,6 +685,9 @@ int main(int argc, char **argv) {
         }
         if (!state.ssl_cert_filename.empty()) {
           args.emplace_back("--ssl-cert=" + state.ssl_cert_filename);
+        }
+        if (!state.ssl_ca_cert_filename.empty()) {
+          args.emplace_back("--ssl-ca-cert=" + state.ssl_ca_cert_filename);
         }
         if (!state.ssl_key_filename.empty()) {
           args.emplace_back("--ssl-key=" + state.ssl_key_filename);

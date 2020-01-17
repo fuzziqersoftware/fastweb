@@ -22,7 +22,7 @@ fastweb supports static redirects and aliases using symbolic links. If a symlink
 
 ### SSL setup
 
-If you want to serve HTTPS traffic, you'll have to do a little more work. Get an SSL certificate and private key (you can use [Let's Encrypt](https://letsencrypt.org/) for this, for example), and put them somewhere where fastweb can read them. (But don't put them in any of your public data directories!) Then run fastweb with the --ssl-cert and --ssl-key options pointing to the relevant filenames, and use --ssl-listen or --ssl-fd to open an SSL port. fastweb will serve the same data over HTTP and HTTPS, so if you want to serve both protocols but have different data available via each, you'll have to run two instances of fastweb.
+If you want to serve HTTPS traffic, you'll have to do a little more work. Get an SSL certificate and private key (you can use [Let's Encrypt](https://letsencrypt.org/) for this, for example), and put them somewhere where fastweb can read them. (But don't put them in any of your public data directories!) Then run fastweb with the --ssl-cert, --ssl-ca-cert, and --ssl-key options pointing to the relevant filenames, and use --ssl-listen or --ssl-fd to open an SSL port. fastweb will serve the same data over HTTP and HTTPS, so if you want to serve both protocols but have different data available via each, you'll have to run two instances of fastweb.
 
 If you use Let's Encrypt (and Certbot), you can set up a deploy hook so that fastweb's certificate gets automatically updated when Certbot automatically renews it. Just put a script like this in the `/etc/letsencrypt/renewal-hooks/deploy` directory and `chmod +x` it:
 
@@ -35,12 +35,13 @@ If you use Let's Encrypt (and Certbot), you can set up a deploy hook so that fas
       DESTINATION_DIR=/etc/fastweb
       umask 077
       cp "$RENEWED_LINEAGE/fullchain.pem" "$DESTINATION_DIR/cert.pem"
+      cp "$RENEWED_LINEAGE/chain.pem" "$DESTINATION_DIR/chain.pem"
       cp "$RENEWED_LINEAGE/privkey.pem" "$DESTINATION_DIR/key.pem"
-      chown www-data "$DESTINATION_DIR/cert.pem" "$DESTINATION_DIR/key.pem"
-      chmod 400 "$DESTINATION_DIR/cert.pem" "$DESTINATION_DIR/key.pem"
+      chown www-data "$DESTINATION_DIR/cert.pem" "$DESTINATION_DIR/chain.pem" "$DESTINATION_DIR/key.pem"
+      chmod 400 "$DESTINATION_DIR/cert.pem" "$DESTINATION_DIR/chain.pem" "$DESTINATION_DIR/key.pem"
 
       # fastweb automatically reloads when its ssl cert/key files change, so we
-      # don't need to do anything else here
+      # don't need to do anything here
     done
 
 This script only works if you have a single certificate, but that certificate can be for multiple domains.
@@ -56,6 +57,7 @@ This is how I run fastweb for my personal website.
         --listen=80 \
         --ssl-listen=443 \
         --ssl-cert=/fastweb-data/ssl/cert.pem \
+        --ssl-ca-cert=/fastweb-data/ssl/chain.pem \
         --ssl-key=/fastweb-data/ssl/key.pem \
         --index=/index.html \
         --404=/404.txt \

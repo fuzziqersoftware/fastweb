@@ -698,6 +698,9 @@ int main(int argc, char **argv) {
         for (int fd : state.ssl_listen_fds) {
           args.emplace_back(string_printf("--ssl-fd=%d", fd));
         }
+        if (state.log_requests) {
+          args.emplace_back("--log-requests");
+        }
         for (const string& directory : state.data_directories) {
           args.emplace_back(directory);
         }

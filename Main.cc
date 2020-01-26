@@ -53,8 +53,8 @@ struct ServerConfiguration {
 
   vector<pair<string, int>> listen_addrs;
   vector<pair<string, int>> ssl_listen_addrs;
-  unordered_set<int> listen_fds;
-  unordered_set<int> ssl_listen_fds;
+  unordered_set<scoped_fd> listen_fds;
+  unordered_set<scoped_fd> ssl_listen_fds;
   size_t num_threads;
 
   pid_t signal_parent_pid;
@@ -480,6 +480,60 @@ int main(int argc, char **argv) {
     log(WARNING, "no CA certificate filename given; some clients may reject this server\'s certificate");
   }
 
+  // open listening sockets. this has to happen before dropping privileges so we
+  // can listen on privileged ports; this doesn't cause problems with reloading
+  // because fds are passed directly to the child process and it doesn't have to
+  // call bind()
+  for (int ssl = 0; ssl < 2; ssl++) {
+    for (const auto& listen_addr : (ssl ? state.ssl_listen_addrs : state.listen_addrs)) {
+      int fd = listen(listen_addr.first, listen_addr.second, SOMAXCONN);
+      if (fd < 0) {
+        log(ERROR, "can\'t open listening socket; addr=%s, port=%d",
+            listen_addr.first.c_str(), listen_addr.second);
+        return 2;
+      }
+
+      evutil_make_socket_nonblocking(fd);
+      if (ssl) {
+        state.ssl_listen_fds.emplace(fd);
+      } else {
+        state.listen_fds.emplace(fd);
+      }
+
+      log(INFO, "opened listening socket %d: addr=%s, port=%d",
+          fd, listen_addr.first.c_str(), listen_addr.second);
+    }
+  }
+
+  // drop privileges if requested. this happens before loading the data so we
+  // can detect permissions problems at initial startup instead of at reload
+  if (!state.user.empty()) {
+    if ((getuid() != 0) || (getgid() != 0)) {
+      log(ERROR, "not started as root; can\'t switch to user %s", state.user.c_str());
+      return 2;
+    }
+
+    struct passwd* pw = getpwnam(state.user.c_str());
+    if (!pw) {
+      string error = string_for_error(errno);
+      log(ERROR, "user %s not found (%s)", state.user.c_str(), error.c_str());
+      return 2;
+    }
+
+    if (setgid(pw->pw_gid) != 0) {
+      string error = string_for_error(errno);
+      log(ERROR, "can\'t switch to group %d (%s)", pw->pw_gid, error.c_str());
+      return 2;
+    }
+    if (setuid(pw->pw_uid) != 0) {
+      string error = string_for_error(errno);
+      log(ERROR, "can\'t switch to user %d (%s)", pw->pw_uid, error.c_str());
+      return 2;
+    }
+    log(INFO, "switched to user %s (%d:%d)",  state.user.c_str(), pw->pw_uid,
+        pw->pw_gid);
+  }
+
   // load data
   uint64_t load_start_time = now();
   for (const auto& directory : state.data_directories) {
@@ -515,28 +569,6 @@ int main(int argc, char **argv) {
     }
   }
 
-  // open listening sockets
-  for (int ssl = 0; ssl < 2; ssl++) {
-    for (const auto& listen_addr : (ssl ? state.ssl_listen_addrs : state.listen_addrs)) {
-      int fd = listen(listen_addr.first, listen_addr.second, SOMAXCONN);
-      if (fd < 0) {
-        log(ERROR, "can\'t open listening socket; addr=%s, port=%d",
-            listen_addr.first.c_str(), listen_addr.second);
-        return 2;
-      }
-
-      evutil_make_socket_nonblocking(fd);
-      if (ssl) {
-        state.ssl_listen_fds.emplace(fd);
-      } else {
-        state.listen_fds.emplace(fd);
-      }
-
-      log(INFO, "opened listening socket %d: addr=%s, port=%d",
-          fd, listen_addr.first.c_str(), listen_addr.second);
-    }
-  }
-
   // load the ssl context if needed
   if (!state.ssl_listen_fds.empty()) {
     SSL_load_error_strings();
@@ -569,34 +601,6 @@ int main(int argc, char **argv) {
       return 2;
     }
     log(INFO, "loaded ssl private key from %s", state.ssl_key_filename.c_str());
-  }
-
-  // drop privileges if requested
-  if (!state.user.empty()) {
-    if ((getuid() != 0) || (getgid() != 0)) {
-      log(ERROR, "not started as root; can\'t switch to user %s", state.user.c_str());
-      return 2;
-    }
-
-    struct passwd* pw = getpwnam(state.user.c_str());
-    if (!pw) {
-      string error = string_for_error(errno);
-      log(ERROR, "user %s not found (%s)", state.user.c_str(), error.c_str());
-      return 2;
-    }
-
-    if (setgid(pw->pw_gid) != 0) {
-      string error = string_for_error(errno);
-      log(ERROR, "can\'t switch to group %d (%s)", pw->pw_gid, error.c_str());
-      return 2;
-    }
-    if (setuid(pw->pw_uid) != 0) {
-      string error = string_for_error(errno);
-      log(ERROR, "can\'t switch to user %d (%s)", pw->pw_uid, error.c_str());
-      return 2;
-    }
-    log(INFO, "switched to user %s (%d:%d)",  state.user.c_str(), pw->pw_uid,
-        pw->pw_gid);
   }
 
   // start server threads

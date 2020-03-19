@@ -161,9 +161,17 @@ const char* mime_type_for_filename(const string& filename) {
   }
 
   // some common (usually text) files don't have extensions
-  try {
-    return mime_type_for_basename.at(filename).c_str();
-  } catch (const out_of_range& e) { }
+  size_t slash_pos = filename.rfind('/');
+  if (slash_pos != string::npos) {
+    try {
+      string basename = filename.substr(slash_pos + 1);
+      return mime_type_for_basename.at(basename).c_str();
+    } catch (const out_of_range& e) { }
+  } else {
+    try {
+      return mime_type_for_basename.at(filename).c_str();
+    } catch (const out_of_range& e) { }
+  }
 
   return "application/octet-stream";
 }

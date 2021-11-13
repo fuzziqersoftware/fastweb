@@ -6,20 +6,13 @@
 #include <zlib.h>
 
 #include <phosg/Filesystem.hh>
+#include <phosg/Hash.hh>
 #include <phosg/Strings.hh>
 
 #include "MIMEType.hh"
 
 using namespace std;
 
-
-static uint64_t fnv1a64(const string& data) {
-  uint64_t hash = 0xCBF29CE484222325;
-  for (char ch : data) {
-    hash = (hash ^ (uint64_t)ch) * 0x00000100000001B3;
-  }
-  return hash;
-}
 
 
 class inefficient_compression : public runtime_error {

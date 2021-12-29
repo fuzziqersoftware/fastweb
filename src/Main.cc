@@ -267,7 +267,7 @@ void http_server_thread(const ServerConfiguration& state) {
     }
   }
 
-  auto check_for_thread_exit = [](evutil_socket_t fd, short what, void* ctx) {
+  auto check_for_thread_exit = [](evutil_socket_t, short, void* ctx) {
     if (should_exit) {
       // technically we should wait for connections to drain here, but we expect
       // all requests to be very fast, so we don't bother

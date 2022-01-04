@@ -39,7 +39,7 @@ set (LIBEVENT_LIBRARIES
 
 add_executable(fastweb src/MIMEType.cc src/ResourceManager.cc src/Main.cc)
 target_include_directories(fastweb PUBLIC ${LIBEVENT_INCLUDE_DIR} ${OPENSSL_INCLUDE_DIR} ${ZLIB_INCLUDE_DIR})
-target_link_libraries(fastweb phosg ${LIBEVENT_LIBRARIES} ${OPENSSL_LIBRARIES} ${ZLIB_LIBRARY})
+target_link_libraries(fastweb phosg ${LIBEVENT_LIBRARIES} ${OPENSSL_LIBRARIES} ${ZLIB_LIBRARY} pthread)
 
 
 

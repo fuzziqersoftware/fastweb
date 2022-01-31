@@ -612,7 +612,7 @@ int main(int argc, char **argv) {
   while (server_threads.size() < state.num_threads) {
     server_threads.emplace_back(http_server_thread, cref(state));
   }
-  log(INFO, "started %d server threads", state.num_threads);
+  log(INFO, "started %zu server threads", state.num_threads);
 
   // register signal handlers
   signal(SIGPIPE, SIG_IGN);
@@ -679,7 +679,7 @@ int main(int argc, char **argv) {
         args.emplace_back(string_printf("--signal-parent=%d", parent_pid));
         args.emplace_back(string_printf("--mtime-check-secs=%" PRIu64,
             state.mtime_check_secs));
-        args.emplace_back(string_printf("--threads=%" PRIu64,
+        args.emplace_back(string_printf("--threads=%zu",
             state.num_threads));
         if (!state.index_resource_name.empty()) {
           args.emplace_back("--index=" + state.index_resource_name);

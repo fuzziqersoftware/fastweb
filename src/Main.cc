@@ -68,9 +68,15 @@ struct ServerConfiguration {
   const ResourceManager::Resource* not_found_resource;
   ResourceManager resource_manager;
 
-  ServerConfiguration() : log_requests(false), num_threads(0),
-      signal_parent_pid(0), gzip_compress_level(6), mtime_check_secs(60),
-      ssl_ctx(NULL), index_resource(NULL), not_found_resource(NULL) { }
+  ServerConfiguration()
+    : log_requests(false),
+      num_threads(0),
+      signal_parent_pid(0),
+      gzip_compress_level(6),
+      mtime_check_secs(60),
+      ssl_ctx(nullptr),
+      index_resource(nullptr),
+      not_found_resource(nullptr) { }
 };
 
 static ResourceManager::Resource default_not_found_resource(
@@ -123,7 +129,7 @@ void handle_request(struct evhttp_request* req, void* ctx) {
   const char* filename = evhttp_request_get_uri(req);
   try {
     // get the relevant resource object
-    const ResourceManager::Resource* res = NULL;
+    const ResourceManager::Resource* res = nullptr;
     try {
       res = &state->resource_manager.get_resource(filename);
       code = 200;
@@ -159,7 +165,7 @@ void handle_request(struct evhttp_request* req, void* ctx) {
       }
       if (send_not_modified) {
         code = 304;
-        evhttp_send_reply(req, 304, "Not Modified", NULL);
+        evhttp_send_reply(req, 304, "Not Modified", nullptr);
 
       // no ETag, it didn't match, or it's a 404
       } else {
@@ -179,16 +185,16 @@ void handle_request(struct evhttp_request* req, void* ctx) {
                strstr(in_accept_encoding, "gzip"))) {
             evhttp_add_header(out_headers, "Content-Encoding", "gzip");
             evbuffer_add_reference(evhttp_request_get_output_buffer(req),
-                res->gzip_data.data(), res->gzip_data.size(), NULL, NULL);
+                res->gzip_data.data(), res->gzip_data.size(), nullptr, nullptr);
             gzip_response_added = true;
           }
         }
 
         if (!gzip_response_added) {
           evbuffer_add_reference(evhttp_request_get_output_buffer(req),
-              res->data.data(), res->data.size(), NULL, NULL);
+              res->data.data(), res->data.size(), nullptr, nullptr);
         }
-        evhttp_send_reply(req, code, (code == 404) ? "Not Found" : "OK", NULL);
+        evhttp_send_reply(req, code, (code == 404) ? "Not Found" : "OK", nullptr);
       }
 
     } else {
@@ -196,11 +202,11 @@ void handle_request(struct evhttp_request* req, void* ctx) {
       // sending a 302 (temporary) instead of 301 (permanent)
       evhttp_add_header(out_headers, "Location", res->data.c_str());
       evhttp_send_reply(req, (code == 404) ? 302 : 301,
-          (code == 404) ? "Temporary Redirect" : "Moved Permanently", NULL);
+          (code == 404) ? "Temporary Redirect" : "Moved Permanently", nullptr);
     }
 
     if (state->log_requests) {
-      log(INFO, "request: %s => %d (res=%s)", log_prefix.c_str(),
+      log_info("request: %s => %d (res=%s)", log_prefix.c_str(),
           code, res ? res->etag : 0);
       struct evbuffer* buf = evhttp_request_get_input_buffer(req);
       print_evbuffer_contents(buf);
@@ -209,11 +215,11 @@ void handle_request(struct evhttp_request* req, void* ctx) {
   } catch (const exception& e) {
     struct evbuffer* out_buffer = evhttp_request_get_output_buffer(req);
     evbuffer_drain(out_buffer, evbuffer_get_length(out_buffer));
-    evbuffer_add_reference(out_buffer, "Internal server error", 21, NULL, NULL);
-    evhttp_send_reply(req, 500, "Internal Server Error", NULL);
+    evbuffer_add_reference(out_buffer, "Internal server error", 21, nullptr, nullptr);
+    evhttp_send_reply(req, 500, "Internal Server Error", nullptr);
 
     if (state->log_requests) {
-      log(INFO, "request: %s => 500 (%s)", log_prefix.c_str(), e.what());
+      log_info("request: %s => 500 (%s)", log_prefix.c_str(), e.what());
       struct evbuffer* buf = evhttp_request_get_input_buffer(req);
       print_evbuffer_contents(buf);
     }
@@ -234,7 +240,7 @@ void http_server_thread(const ServerConfiguration& state) {
   unique_ptr<struct event_base, void(*)(struct event_base*)> base(
       event_base_new(), event_base_free);
   if (!base) {
-    log(ERROR, "error: can\'t open event base for http server");
+    log_error("error: can\'t open event base for http server");
     return;
   }
 
@@ -243,7 +249,7 @@ void http_server_thread(const ServerConfiguration& state) {
   servers.emplace_back(evhttp_new(base.get()), evhttp_free);
   auto& server = servers.back();
   if (!server) {
-    log(ERROR, "error: can\'t create http server");
+    log_error("error: can\'t create http server");
     return;
   }
   evhttp_set_gencb(server.get(), handle_request, (void*)&state);
@@ -255,7 +261,7 @@ void http_server_thread(const ServerConfiguration& state) {
     servers.emplace_back(evhttp_new(base.get()), evhttp_free);
     auto& ssl_server = servers.back();
     if (!ssl_server) {
-      log(ERROR, "error: can\'t create ssl http server");
+      log_error("error: can\'t create ssl http server");
       return;
     }
 
@@ -271,7 +277,7 @@ void http_server_thread(const ServerConfiguration& state) {
     if (should_exit) {
       // technically we should wait for connections to drain here, but we expect
       // all requests to be very fast, so we don't bother
-      event_base_loopexit((struct event_base*)ctx, NULL);
+      event_base_loopexit((struct event_base*)ctx, nullptr);
     }
   };
 
@@ -374,9 +380,6 @@ If no data directories are given, the current directory is used.\n", argv0);
 }
 
 int main(int argc, char **argv) {
-
-  log(INFO, "fuzziqer software fastweb");
-
   ServerConfiguration state;
   size_t num_bad_options = 0;
 
@@ -395,7 +398,7 @@ int main(int argc, char **argv) {
       // it's an addr:port pair
       addrs.emplace_back(make_pair(parts[0], stoi(parts[1])));
     } else {
-      log(ERROR, "bad netloc in command line: %s", arg);
+      log_error("bad netloc in command line: %s", arg);
       num_bad_options++;
     }
   };
@@ -461,23 +464,23 @@ int main(int argc, char **argv) {
   }
   if (state.listen_fds.empty() && state.ssl_listen_fds.empty() &&
       state.listen_addrs.empty() && state.ssl_listen_addrs.empty()) {
-    log(ERROR, "no listening sockets or addresses given");
+    log_error("no listening sockets or addresses given");
     print_usage(argv[0]);
     return 1;
   }
   if (state.data_directories.empty()) {
     state.data_directories.emplace_back("./");
-    log(WARNING, "no data directories given; using the current directory");
+    log_warning("no data directories given; using the current directory");
   }
   if ((!state.ssl_listen_fds.empty() || !state.ssl_listen_addrs.empty()) &&
       (state.ssl_cert_filename.empty() || state.ssl_key_filename.empty())) {
-    log(ERROR, "an SSL certificate and key must be given if SSL listen sockets or addresses are given");
+    log_error("an SSL certificate and key must be given if SSL listen sockets or addresses are given");
     print_usage(argv[0]);
     return 1;
   }
   if ((!state.ssl_listen_fds.empty() || !state.ssl_listen_addrs.empty()) &&
       state.ssl_ca_cert_filename.empty()) {
-    log(WARNING, "no CA certificate filename given; some clients may reject this server\'s certificate");
+    log_warning("no CA certificate filename given; some clients may reject this server\'s certificate");
   }
 
   // open listening sockets. this has to happen before dropping privileges so we
@@ -488,7 +491,7 @@ int main(int argc, char **argv) {
     for (const auto& listen_addr : (ssl ? state.ssl_listen_addrs : state.listen_addrs)) {
       int fd = listen(listen_addr.first, listen_addr.second, SOMAXCONN);
       if (fd < 0) {
-        log(ERROR, "can\'t open listening socket; addr=%s, port=%d",
+        log_error("can\'t open listening socket; addr=%s, port=%d",
             listen_addr.first.c_str(), listen_addr.second);
         return 2;
       }
@@ -500,7 +503,7 @@ int main(int argc, char **argv) {
         state.listen_fds.emplace(fd);
       }
 
-      log(INFO, "opened listening socket %d: addr=%s, port=%d",
+      log_info("opened listening socket %d: addr=%s, port=%d",
           fd, listen_addr.first.c_str(), listen_addr.second);
     }
   }
@@ -509,28 +512,28 @@ int main(int argc, char **argv) {
   // can detect permissions problems at initial startup instead of at reload
   if (!state.user.empty()) {
     if ((getuid() != 0) || (getgid() != 0)) {
-      log(ERROR, "not started as root; can\'t switch to user %s", state.user.c_str());
+      log_error("not started as root; can\'t switch to user %s", state.user.c_str());
       return 2;
     }
 
     struct passwd* pw = getpwnam(state.user.c_str());
     if (!pw) {
       string error = string_for_error(errno);
-      log(ERROR, "user %s not found (%s)", state.user.c_str(), error.c_str());
+      log_error("user %s not found (%s)", state.user.c_str(), error.c_str());
       return 2;
     }
 
     if (setgid(pw->pw_gid) != 0) {
       string error = string_for_error(errno);
-      log(ERROR, "can\'t switch to group %d (%s)", pw->pw_gid, error.c_str());
+      log_error("can\'t switch to group %d (%s)", pw->pw_gid, error.c_str());
       return 2;
     }
     if (setuid(pw->pw_uid) != 0) {
       string error = string_for_error(errno);
-      log(ERROR, "can\'t switch to user %d (%s)", pw->pw_uid, error.c_str());
+      log_error("can\'t switch to user %d (%s)", pw->pw_uid, error.c_str());
       return 2;
     }
-    log(INFO, "switched to user %s (%d:%d)",  state.user.c_str(), pw->pw_uid,
+    log_info("switched to user %s (%d:%d)",  state.user.c_str(), pw->pw_uid,
         pw->pw_gid);
   }
 
@@ -540,7 +543,7 @@ int main(int argc, char **argv) {
     state.resource_manager.add_directory(directory, state.gzip_compress_level);
   }
   uint64_t load_end_time = now();
-  log(INFO, "loaded %zu resources, including %zu files (%zu bytes, %zu compressed, %g%%), in %" PRIu64 " microseconds",
+  log_info("loaded %zu resources, including %zu files (%zu bytes, %zu compressed, %g%%), in %" PRIu64 " microseconds",
       state.resource_manager.resource_count(),
       state.resource_manager.file_count(),
       state.resource_manager.resource_bytes(),
@@ -548,7 +551,7 @@ int main(int argc, char **argv) {
       ((float)state.resource_manager.compressed_resource_bytes() / state.resource_manager.resource_bytes()) * 100,
       load_end_time - load_start_time);
   if (state.mtime_check_secs) {
-    log(INFO, "checking for changes to these resources every %" PRIu64 " seconds", state.mtime_check_secs);
+    log_info("checking for changes to these resources every %" PRIu64 " seconds", state.mtime_check_secs);
   }
 
   // resolve special resources
@@ -556,7 +559,7 @@ int main(int argc, char **argv) {
     try {
       state.index_resource = &state.resource_manager.get_resource(state.index_resource_name);
     } catch (const out_of_range& e) {
-      log(ERROR, "index resource %s does not exist", state.index_resource_name.c_str());
+      log_error("index resource %s does not exist", state.index_resource_name.c_str());
       return 2;
     }
   }
@@ -564,7 +567,7 @@ int main(int argc, char **argv) {
     try {
       state.not_found_resource = &state.resource_manager.get_resource(state.not_found_resource_name);
     } catch (const out_of_range& e) {
-      log(ERROR, "404 resource %s does not exist", state.not_found_resource_name.c_str());
+      log_error("404 resource %s does not exist", state.not_found_resource_name.c_str());
       return 2;
     }
   }
@@ -576,7 +579,7 @@ int main(int argc, char **argv) {
 
     state.ssl_ctx = SSL_CTX_new(TLS_method());
     if (!state.ssl_ctx) {
-      log(ERROR, "can\'t create openssl context");
+      log_error("can\'t create openssl context");
       ERR_print_errors_fp(stderr);
       return 2;
     }
@@ -584,23 +587,23 @@ int main(int argc, char **argv) {
     SSL_CTX_set_cipher_list(state.ssl_ctx, "ECDH+AESGCM:ECDH+CHACHA20:DH+AESGCM:ECDH+AES256:DH+AES256:ECDH+AES128:DH+AES:RSA+AESGCM:RSA+AES:!aNULL:!MD5:!DSS:!AESCCM:!RSA");
     SSL_CTX_set_ecdh_auto(state.ssl_ctx, 1);
     if (!state.ssl_ca_cert_filename.empty()) {
-      SSL_CTX_load_verify_locations(state.ssl_ctx, state.ssl_ca_cert_filename.c_str(), NULL);
-      log(INFO, "loaded ssl ca certificate from %s", state.ssl_ca_cert_filename.c_str());
+      SSL_CTX_load_verify_locations(state.ssl_ctx, state.ssl_ca_cert_filename.c_str(), nullptr);
+      log_info("loaded ssl ca certificate from %s", state.ssl_ca_cert_filename.c_str());
     }
     if (SSL_CTX_use_certificate_file(state.ssl_ctx,
         state.ssl_cert_filename.c_str(), SSL_FILETYPE_PEM) <= 0) {
-      log(ERROR, "can\'t open %s", state.ssl_cert_filename.c_str());
+      log_error("can\'t open %s", state.ssl_cert_filename.c_str());
       ERR_print_errors_fp(stderr);
       return 2;
     }
-    log(INFO, "loaded ssl certificate from %s", state.ssl_cert_filename.c_str());
+    log_info("loaded ssl certificate from %s", state.ssl_cert_filename.c_str());
     if (SSL_CTX_use_PrivateKey_file(state.ssl_ctx,
         state.ssl_key_filename.c_str(), SSL_FILETYPE_PEM) <= 0) {
-      log(ERROR, "can\'t open %s", state.ssl_key_filename.c_str());
+      log_error("can\'t open %s", state.ssl_key_filename.c_str());
       ERR_print_errors_fp(stderr);
       return 2;
     }
-    log(INFO, "loaded ssl private key from %s", state.ssl_key_filename.c_str());
+    log_info("loaded ssl private key from %s", state.ssl_key_filename.c_str());
   }
 
   // start server threads
@@ -612,7 +615,7 @@ int main(int argc, char **argv) {
   while (server_threads.size() < state.num_threads) {
     server_threads.emplace_back(http_server_thread, cref(state));
   }
-  log(INFO, "started %zu server threads", state.num_threads);
+  log_info("started %zu server threads", state.num_threads);
 
   // register signal handlers
   signal(SIGPIPE, SIG_IGN);
@@ -624,10 +627,10 @@ int main(int argc, char **argv) {
   // kill the parent if needed
   if (state.signal_parent_pid) {
     if (kill(state.signal_parent_pid, SIGTERM)) {
-      log(ERROR, "failed to kill parent process %d", state.signal_parent_pid);
+      log_error("failed to kill parent process %d", state.signal_parent_pid);
       return 1;
     }
-    log(INFO, "killed parent process %d", state.signal_parent_pid);
+    log_info("killed parent process %d", state.signal_parent_pid);
   }
 
   // reloading is implemented as follows:
@@ -653,24 +656,24 @@ int main(int argc, char **argv) {
 
       if (!should_exit && !reload_pid && !should_reload && files_changed) {
         should_reload = true;
-        log(INFO, "some files were changed on disk; reloading");
+        log_info("some files were changed on disk; reloading");
       }
     } else {
       sigsuspend(&sigs);
     }
 
     if (should_exit) {
-      log(INFO, "exit request received");
+      log_info("exit request received");
     }
 
     if (should_reload) {
-      log(INFO, "reload request received");
+      log_info("reload request received");
 
       pid_t parent_pid = getpid();
       reload_pid = fork();
       if (reload_pid < 0) {
         string error = string_for_error(errno);
-        log(ERROR, "reload requested, but can\'t fork (%s)", error.c_str());
+        log_error("reload requested, but can\'t fork (%s)", error.c_str());
 
       } else if (reload_pid == 0) {
         // child process: exec ourself with args to pass the listening fds down
@@ -720,7 +723,7 @@ int main(int argc, char **argv) {
         execvp(argv[0], argv.data());
 
         string error = string_for_error(errno);
-        log(ERROR, "execvp returned (%s)", error.c_str());
+        log_error("execvp returned (%s)", error.c_str());
         return 1;
       }
 
@@ -728,20 +731,20 @@ int main(int argc, char **argv) {
     }
 
     if (reload_pid < 0) {
-      log(INFO, "child process terminated; reload failed");
+      log_info("child process terminated; reload failed");
 
       // reap all relevant zombies
       int exit_status;
       pid_t pid = waitpid(-1, &exit_status, WNOHANG);
       while (pid != -1) {
         if (WIFEXITED(exit_status)) {
-          log(WARNING, "child process %d exited with code %d", pid,
+          log_warning("child process %d exited with code %d", pid,
               WEXITSTATUS(exit_status));
         } else if (WIFSIGNALED(exit_status)) {
-          log(WARNING, "child process %d exited due to signal %d", pid,
+          log_warning("child process %d exited due to signal %d", pid,
               WTERMSIG(exit_status));
         } else {
-          log(WARNING, "child process %d exited with status %d", pid,
+          log_warning("child process %d exited with status %d", pid,
               exit_status);
         }
 
@@ -749,7 +752,7 @@ int main(int argc, char **argv) {
       }
       if (errno != ECHILD) {
         string error = string_for_error(errno);
-        log(WARNING, "failed to reap zombies: %s", error.c_str());
+        log_warning("failed to reap zombies: %s", error.c_str());
       }
 
       reload_pid = 0;
@@ -773,6 +776,6 @@ int main(int argc, char **argv) {
     EVP_cleanup();
   }
 
-  log(INFO, "all threads exited");
+  log_info("all threads exited");
   return 0;
 }

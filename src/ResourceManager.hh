@@ -20,10 +20,10 @@ public:
     uint64_t modification_time;
     uint64_t hash;
     char etag[20];
-    const char* mime_type; // if NULL, it's a redirect
+    const char* mime_type; // if null, it's a redirect
 
     Resource(const std::string& data, uint64_t modification_time = 0,
-        const char* mime_type = NULL, int gzip_compress_level = 6);
+        const char* mime_type = nullptr, int gzip_compress_level = 6);
   };
 
   void add_directory(const std::string& directory, int gzip_compress_level = 6);

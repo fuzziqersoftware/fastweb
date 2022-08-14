@@ -1,4 +1,4 @@
-# fastweb
+# fastweb <img align="right" src="s-fastweb.png" />
 
 fastweb is a very simple HTTP and HTTPS server for static files.
 

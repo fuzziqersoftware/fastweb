@@ -1,6 +1,6 @@
 #define _STDC_FORMAT_MACROS
 
-#include "ResourceManager.hh"
+#include "MemoryResourceManager.hh"
 
 #include <inttypes.h>
 #include <zlib.h>
@@ -15,77 +15,21 @@ using namespace std;
 
 
 
-class inefficient_compression : public runtime_error {
-public:
-  inefficient_compression() : runtime_error("inefficient compression") { }
-};
+MemoryResourceManager::MemoryResourceManager()
+  : total_bytes(0), compressed_bytes(0) { }
 
-static string gzip_compress(const string& data, int level) {
-
-  z_stream zs;
-  zs.zalloc = Z_NULL;
-  zs.zfree = Z_NULL;
-  zs.opaque = Z_NULL;
-
-  if (deflateInit2(&zs, level, Z_DEFLATED, 15 + 16, 9, Z_DEFAULT_STRATEGY) != Z_OK) {
-    throw runtime_error("can\'t create gzip compressor");
-  }
-
-  string result_data(data.size(), 0);
-
-  zs.avail_in = data.size();
-  zs.next_in = (unsigned char*)data.data();
-  zs.avail_out = result_data.size();
-  zs.next_out = (unsigned char*)result_data.data();
-
-  int retcode = deflate(&zs, Z_FINISH);
-  deflateEnd(&zs);
-  if (retcode == Z_BUF_ERROR || retcode == Z_OK) {
-    throw inefficient_compression();
-  } else if (retcode != Z_STREAM_END) {
-    throw runtime_error("gzip compression failed: " + to_string(retcode));
-  }
-  if (zs.avail_in != 0) {
-    throw inefficient_compression();
-  }
-  if (zs.avail_out > data.size()) {
-    throw runtime_error("invalid output buffer state after compression");
-  }
-
-  result_data.resize(result_data.size() - zs.avail_out);
-  result_data.shrink_to_fit();
-  return result_data;
+void MemoryResourceManager::add_directory(
+    const string& directory, int gzip_compress_level) {
+  this->add_directory_recursive(
+      directory, directory, stat(directory).st_mtime, gzip_compress_level);
 }
 
-
-ResourceManager::ResourceManager() : total_bytes(0), compressed_bytes(0) { }
-
-ResourceManager::Resource::Resource(const string& data,
-    uint64_t modification_time, const char* mime_type, int gzip_compress_level)
-    : data(data), gzip_data(), modification_time(modification_time),
-    hash(fnv1a64(data)), mime_type(mime_type) {
-  sprintf(this->etag, "%016" PRIX64, this->hash);
-
-  // if it's not a redirect and compression is enabled, try to compress it
-  if (this->mime_type && gzip_compress_level) {
-    try {
-      this->gzip_data = gzip_compress(this->data, gzip_compress_level);
-    } catch (const inefficient_compression& e) { }
-  }
-}
-
-void ResourceManager::add_directory(const string& directory,
-    int gzip_compress_level) {
-  this->add_directory_recursive(directory, directory, stat(directory).st_mtime,
-      gzip_compress_level);
-}
-
-const ResourceManager::Resource& ResourceManager::get_resource(
+shared_ptr<const ResourceManagerBase::Resource> MemoryResourceManager::get_resource(
     const string& name) const {
-  return *this->name_to_resource.at(name);
+  return this->name_to_resource.at(name);
 }
 
-bool ResourceManager::any_resource_changed() const {
+bool MemoryResourceManager::any_resource_changed() const {
   for (const auto& it : this->directory_path_to_mtime) {
     try {
       if ((uint64_t)stat(it.first).st_mtime != it.second) {
@@ -109,24 +53,27 @@ bool ResourceManager::any_resource_changed() const {
   return false;
 }
 
-size_t ResourceManager::resource_count() const {
+size_t MemoryResourceManager::resource_count() const {
   return this->name_to_resource.size();
 }
 
-size_t ResourceManager::resource_bytes() const {
+size_t MemoryResourceManager::resource_bytes() const {
   return this->total_bytes;
 }
 
-size_t ResourceManager::compressed_resource_bytes() const {
+size_t MemoryResourceManager::compressed_resource_bytes() const {
   return this->compressed_bytes;
 }
 
-size_t ResourceManager::file_count() const {
+size_t MemoryResourceManager::file_count() const {
   return this->path_to_resource.size();
 }
 
-void ResourceManager::add_directory_recursive(const string& base_path,
-    const string& full_path, uint64_t directory_mtime, int gzip_compress_level) {
+void MemoryResourceManager::add_directory_recursive(
+    const string& base_path,
+    const string& full_path,
+    uint64_t directory_mtime,
+    int gzip_compress_level) {
 
   this->directory_path_to_mtime.emplace(full_path, directory_mtime);
 
@@ -148,7 +95,7 @@ void ResourceManager::add_directory_recursive(const string& base_path,
         // the link is not valid; treat it as an external redirect
         string item_relative_path = item_full_path.substr(base_path.size());
         string target = readlink(item_full_path);
-        shared_ptr<Resource> res(new Resource(target, st.st_mtime));
+        shared_ptr<Resource> res(new Resource(move(target), st.st_mtime));
         this->name_to_resource.emplace(item_relative_path, res);
         continue;
       }

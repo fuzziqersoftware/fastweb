@@ -26,7 +26,8 @@
 #include <phosg/Time.hh>
 
 #include "MIMEType.hh"
-#include "ResourceManager.hh"
+#include "MemoryResourceManager.hh"
+#include "FileResourceManager.hh"
 
 using namespace std;
 
@@ -64,9 +65,9 @@ struct ServerConfiguration {
 
   SSL_CTX* ssl_ctx;
 
-  const ResourceManager::Resource* index_resource;
-  const ResourceManager::Resource* not_found_resource;
-  ResourceManager resource_manager;
+  shared_ptr<const ResourceManagerBase::Resource> index_resource;
+  shared_ptr<const ResourceManagerBase::Resource> not_found_resource;
+  unique_ptr<ResourceManagerBase> resource_manager;
 
   ServerConfiguration()
     : log_requests(false),
@@ -79,8 +80,8 @@ struct ServerConfiguration {
       not_found_resource(nullptr) { }
 };
 
-static ResourceManager::Resource default_not_found_resource(
-    "File not found", 0, "text/plain");
+static shared_ptr<const ResourceManagerBase::Resource> default_not_found_resource(
+    new ResourceManagerBase::Resource("File not found", 0, "text/plain"));
 
 
 
@@ -129,9 +130,9 @@ void handle_request(struct evhttp_request* req, void* ctx) {
   const char* filename = evhttp_request_get_uri(req);
   try {
     // get the relevant resource object
-    const ResourceManager::Resource* res = nullptr;
+    shared_ptr<const ResourceManagerBase::Resource> res;
     try {
-      res = &state->resource_manager.get_resource(filename);
+      res = state->resource_manager->get_resource(filename);
       code = 200;
 
     } catch (const out_of_range& e) {
@@ -145,7 +146,7 @@ void handle_request(struct evhttp_request* req, void* ctx) {
         code = 404;
 
       } else {
-        res = &default_not_found_resource;
+        res = default_not_found_resource;
         code = 404;
       }
     }
@@ -160,8 +161,7 @@ void handle_request(struct evhttp_request* req, void* ctx) {
       if (code != 404) {
         const char* in_if_none_match = evhttp_find_header(in_headers,
             "If-None-Match");
-        send_not_modified = in_if_none_match &&
-            !strcmp(in_if_none_match, res->etag);
+        send_not_modified = in_if_none_match && (res->etag == in_if_none_match);
       }
       if (send_not_modified) {
         code = 304;
@@ -172,7 +172,7 @@ void handle_request(struct evhttp_request* req, void* ctx) {
         evhttp_add_header(out_headers, "Content-Type", res->mime_type);
         // don't send ETag for 404s
         if (code == 200) {
-          evhttp_add_header(out_headers, "ETag", res->etag);
+          evhttp_add_header(out_headers, "ETag", res->etag.c_str());
         }
 
         bool gzip_response_added = false;
@@ -206,8 +206,8 @@ void handle_request(struct evhttp_request* req, void* ctx) {
     }
 
     if (state->log_requests) {
-      log_info("request: %s => %d (res=%s)", log_prefix.c_str(),
-          code, res ? res->etag : 0);
+      log_info("request: %s => %d (res=%s)",
+          log_prefix.c_str(), code, res ? res->etag.c_str() : "(none)");
       struct evbuffer* buf = evhttp_request_get_input_buffer(req);
       print_evbuffer_contents(buf);
     }
@@ -356,6 +356,11 @@ Options:\n\
       Serve the given object in place of missing objects (but serve it with an\n\
       HTTP 404 response code instead of 200). Line --index, the object name\n\
       should be relative to one of the data directories.\n\
+  --files\n\
+      Don\'t preload resources; instead, read files at request time. This makes\n\
+      fastweb significantly less fast, but saves a lot of memory and allows for\n\
+      immediate change response (which is necessary when doing certbot\n\
+      verifications, for example).\n\
   --gzip-level=N\n\
       Generate gzip-compressed versions of all resources with this compression\n\
       level (0-9). 9 gives the slowest compression and the smallest objects;\n\
@@ -403,6 +408,7 @@ int main(int argc, char **argv) {
     }
   };
 
+  state.resource_manager.reset(new MemoryResourceManager());
   for (int x = 1; x < argc; x++) {
     if (!strncmp(argv[x], "--signal-parent=", 16)) {
       state.signal_parent_pid = atoi(&argv[x][16]);
@@ -436,6 +442,9 @@ int main(int argc, char **argv) {
 
     } else if (!strncmp(argv[x], "--404=", 6)) {
       state.not_found_resource_name = &argv[x][6];
+
+    } else if (!strcmp(argv[x], "--files")) {
+      state.resource_manager.reset(new FileResourceManager());
 
     } else if (!strncmp(argv[x], "--gzip-level=", 13)) {
       state.gzip_compress_level = atoi(&argv[x][13]);
@@ -540,15 +549,15 @@ int main(int argc, char **argv) {
   // load data
   uint64_t load_start_time = now();
   for (const auto& directory : state.data_directories) {
-    state.resource_manager.add_directory(directory, state.gzip_compress_level);
+    state.resource_manager->add_directory(directory, state.gzip_compress_level);
   }
   uint64_t load_end_time = now();
   log_info("loaded %zu resources, including %zu files (%zu bytes, %zu compressed, %g%%), in %" PRIu64 " microseconds",
-      state.resource_manager.resource_count(),
-      state.resource_manager.file_count(),
-      state.resource_manager.resource_bytes(),
-      state.resource_manager.compressed_resource_bytes(),
-      ((float)state.resource_manager.compressed_resource_bytes() / state.resource_manager.resource_bytes()) * 100,
+      state.resource_manager->resource_count(),
+      state.resource_manager->file_count(),
+      state.resource_manager->resource_bytes(),
+      state.resource_manager->compressed_resource_bytes(),
+      (static_cast<float>(state.resource_manager->compressed_resource_bytes()) / state.resource_manager->resource_bytes()) * 100,
       load_end_time - load_start_time);
   if (state.mtime_check_secs) {
     log_info("checking for changes to these resources every %" PRIu64 " seconds", state.mtime_check_secs);
@@ -557,7 +566,7 @@ int main(int argc, char **argv) {
   // resolve special resources
   if (!state.index_resource_name.empty()) {
     try {
-      state.index_resource = &state.resource_manager.get_resource(state.index_resource_name);
+      state.index_resource = state.resource_manager->get_resource(state.index_resource_name);
     } catch (const out_of_range& e) {
       log_error("index resource %s does not exist", state.index_resource_name.c_str());
       return 2;
@@ -565,7 +574,7 @@ int main(int argc, char **argv) {
   }
   if (!state.not_found_resource_name.empty()) {
     try {
-      state.not_found_resource = &state.resource_manager.get_resource(state.not_found_resource_name);
+      state.not_found_resource = state.resource_manager->get_resource(state.not_found_resource_name);
     } catch (const out_of_range& e) {
       log_error("404 resource %s does not exist", state.not_found_resource_name.c_str());
       return 2;
@@ -646,7 +655,7 @@ int main(int argc, char **argv) {
     if (state.mtime_check_secs) {
       usleep(state.mtime_check_secs * 1000 * 1000);
 
-      bool files_changed = state.resource_manager.any_resource_changed();
+      bool files_changed = state.resource_manager->any_resource_changed();
       if (!files_changed && state.ssl_ctx) {
         files_changed |= (static_cast<uint64_t>(stat(state.ssl_cert_filename).st_mtime) != state.ssl_cert_mtime);
         files_changed |= !state.ssl_ca_cert_filename.empty() && (

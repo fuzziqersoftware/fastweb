@@ -14,9 +14,9 @@ else()
     add_compile_options(-Wall -Wextra -pedantic -Werror)
 endif()
 
+list(INSERT CMAKE_PREFIX_PATH 0 /opt/homebrew)
 include_directories("/usr/local/include")
 link_directories("/usr/local/lib")
-list(INSERT CMAKE_SYSTEM_PREFIX_PATH 0 /opt/homebrew)
 
 
 
@@ -37,7 +37,14 @@ set (LIBEVENT_LIBRARIES
         ${LIBEVENT_THREAD}
         ${LIBEVENT_SSL})
 
-add_executable(fastweb src/MIMEType.cc src/ResourceManager.cc src/Main.cc)
+add_executable(
+    fastweb
+    src/FileResourceManager.cc
+    src/Main.cc
+    src/MemoryResourceManager.cc
+    src/MIMEType.cc
+    src/ResourceManagerBase.cc
+)
 target_include_directories(fastweb PUBLIC ${LIBEVENT_INCLUDE_DIR} ${OPENSSL_INCLUDE_DIR} ${ZLIB_INCLUDE_DIR})
 target_link_libraries(fastweb phosg ${LIBEVENT_LIBRARIES} ${OPENSSL_LIBRARIES} ${ZLIB_LIBRARY} pthread)
 

@@ -13,11 +13,9 @@
 
 using namespace std;
 
-
-
 class inefficient_compression : public runtime_error {
 public:
-  inefficient_compression() : runtime_error("inefficient compression") { }
+  inefficient_compression() : runtime_error("inefficient compression") {}
 };
 
 static string gzip_compress(const string& data, int level) {
@@ -57,28 +55,25 @@ static string gzip_compress(const string& data, int level) {
   return result_data;
 }
 
-
-
-ResourceManagerBase::~ResourceManagerBase() { }
-
-
+ResourceManagerBase::~ResourceManagerBase() {}
 
 ResourceManagerBase::Resource::Resource(
     string&& data,
     uint64_t modification_time,
     const char* mime_type,
     int gzip_compress_level)
-  : data(move(data)),
-    gzip_data(),
-    modification_time(modification_time),
-    hash(fnv1a64(this->data)),
-    mime_type(mime_type) {
-  this->etag = string_printf("%016" PRIX64, this->hash);
+    : data(std::move(data)),
+      gzip_data(),
+      modification_time(modification_time),
+      hash(phosg::fnv1a64(this->data)),
+      mime_type(mime_type) {
+  this->etag = phosg::string_printf("%016" PRIX64, this->hash);
 
   // If it's not a redirect and compression is enabled, try to compress it
   if (this->mime_type && gzip_compress_level) {
     try {
       this->gzip_data = gzip_compress(this->data, gzip_compress_level);
-    } catch (const inefficient_compression& e) { }
+    } catch (const inefficient_compression& e) {
+    }
   }
 }

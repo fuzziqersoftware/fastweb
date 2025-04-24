@@ -3,13 +3,11 @@
 #include <stdint.h>
 
 #include <memory>
-#include <vector>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "ResourceManagerBase.hh"
-
-
 
 class FileResourceManager : public ResourceManagerBase {
 public:

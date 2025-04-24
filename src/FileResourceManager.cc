@@ -13,8 +13,6 @@
 
 using namespace std;
 
-
-
 void FileResourceManager::add_directory(
     const string& directory, int gzip_compress_level) {
   this->root_directories.emplace_back(directory, gzip_compress_level);
@@ -31,10 +29,11 @@ FileResourceManager::get_resource(const string& name) const {
 
   for (const auto& root_it : this->root_directories) {
     try {
-      auto data = load_file(root_it.first + name);
+      auto data = phosg::load_file(root_it.first + name);
       return shared_ptr<Resource>(new Resource(
-          move(data), 0, mime_type_for_filename(name), root_it.second));
-    } catch (const runtime_error&) { }
+          std::move(data), 0, mime_type_for_filename(name), root_it.second));
+    } catch (const runtime_error&) {
+    }
   }
   throw std::out_of_range("file not found");
 }

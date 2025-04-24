@@ -6,7 +6,6 @@
 #include <string>
 #include <unordered_map>
 
-
 class ResourceManagerBase {
 protected:
   ResourceManagerBase() = default;
@@ -14,6 +13,7 @@ protected:
   ResourceManagerBase(ResourceManagerBase&&) = delete;
   ResourceManagerBase& operator=(const ResourceManagerBase&) = delete;
   ResourceManagerBase& operator=(ResourceManagerBase&&) = delete;
+
 public:
   virtual ~ResourceManagerBase();
 

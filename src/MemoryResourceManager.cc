@@ -13,15 +13,13 @@
 
 using namespace std;
 
-
-
 MemoryResourceManager::MemoryResourceManager()
-  : total_bytes(0), compressed_bytes(0) { }
+    : total_bytes(0), compressed_bytes(0) {}
 
 void MemoryResourceManager::add_directory(
     const string& directory, int gzip_compress_level) {
   this->add_directory_recursive(
-      directory, directory, stat(directory).st_mtime, gzip_compress_level);
+      directory, directory, phosg::stat(directory).st_mtime, gzip_compress_level);
 }
 
 shared_ptr<const ResourceManagerBase::Resource> MemoryResourceManager::get_resource(
@@ -32,20 +30,20 @@ shared_ptr<const ResourceManagerBase::Resource> MemoryResourceManager::get_resou
 bool MemoryResourceManager::any_resource_changed() const {
   for (const auto& it : this->directory_path_to_mtime) {
     try {
-      if ((uint64_t)stat(it.first).st_mtime != it.second) {
+      if ((uint64_t)phosg::stat(it.first).st_mtime != it.second) {
         return true;
       }
-    } catch (cannot_stat_file& e) {
+    } catch (phosg::cannot_stat_file& e) {
       return true; // it was likely deleted
     }
   }
 
   for (const auto& it : this->path_to_resource) {
     try {
-      if ((uint64_t)stat(it.first).st_mtime != it.second->modification_time) {
+      if ((uint64_t)phosg::stat(it.first).st_mtime != it.second->modification_time) {
         return true;
       }
-    } catch (cannot_stat_file& e) {
+    } catch (phosg::cannot_stat_file& e) {
       return true; // it was likely deleted
     }
   }
@@ -77,25 +75,25 @@ void MemoryResourceManager::add_directory_recursive(
 
   this->directory_path_to_mtime.emplace(full_path, directory_mtime);
 
-  for (const string& item : list_directory(full_path)) {
+  for (const string& item : phosg::list_directory(full_path)) {
 
     string item_full_path = full_path + "/" + item;
-    auto st = lstat(item_full_path);
+    auto st = phosg::lstat(item_full_path);
     int type = st.st_mode & S_IFMT;
 
     string real_item_full_path;
     if (type == S_IFLNK) {
       try {
-        real_item_full_path = realpath(item_full_path);
+        real_item_full_path = phosg::realpath(item_full_path);
         // if realpath doesn't throw, the link is valid; process the target
-        st = stat(real_item_full_path);
+        st = phosg::stat(real_item_full_path);
         type = st.st_mode & S_IFMT;
 
-      } catch (const cannot_stat_file& e) {
+      } catch (const phosg::cannot_stat_file& e) {
         // the link is not valid; treat it as an external redirect
         string item_relative_path = item_full_path.substr(base_path.size());
-        string target = readlink(item_full_path);
-        shared_ptr<Resource> res(new Resource(move(target), st.st_mtime));
+        string target = phosg::readlink(item_full_path);
+        shared_ptr<Resource> res(new Resource(std::move(target), st.st_mtime));
         this->name_to_resource.emplace(item_relative_path, res);
         continue;
       }
@@ -108,7 +106,7 @@ void MemoryResourceManager::add_directory_recursive(
     } else if (type == S_IFREG) {
       string item_relative_path = item_full_path.substr(base_path.size());
       if (real_item_full_path.empty()) {
-        real_item_full_path = realpath(item_full_path);
+        real_item_full_path = phosg::realpath(item_full_path);
       }
 
       // the resource may already be in path_to_resource if there was a
@@ -116,7 +114,7 @@ void MemoryResourceManager::add_directory_recursive(
       auto existing_file_it = this->path_to_resource.find(real_item_full_path);
       if (existing_file_it == this->path_to_resource.end()) {
         // resource doesn't exist; create a new one
-        shared_ptr<Resource> res(new Resource(load_file(item_full_path),
+        shared_ptr<Resource> res(new Resource(phosg::load_file(item_full_path),
             st.st_mtime, mime_type_for_filename(item), gzip_compress_level));
         this->path_to_resource.emplace(real_item_full_path, res);
         this->name_to_resource.emplace(item_relative_path, res);

@@ -1,9 +1,9 @@
 #define _STDC_FORMAT_MACROS
 
-#include <event2/listener.h>
 #include <event2/buffer.h>
 #include <event2/bufferevent_ssl.h>
 #include <event2/http.h>
+#include <event2/listener.h>
 #include <inttypes.h>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
@@ -25,13 +25,11 @@
 #include <phosg/Strings.hh>
 #include <phosg/Time.hh>
 
+#include "FileResourceManager.hh"
 #include "MIMEType.hh"
 #include "MemoryResourceManager.hh"
-#include "FileResourceManager.hh"
 
 using namespace std;
-
-
 
 bool should_exit = false;
 bool should_reload = false;
@@ -54,8 +52,8 @@ struct ServerConfiguration {
 
   vector<pair<string, int>> listen_addrs;
   vector<pair<string, int>> ssl_listen_addrs;
-  unordered_set<scoped_fd> listen_fds;
-  unordered_set<scoped_fd> ssl_listen_fds;
+  vector<phosg::scoped_fd> listen_fds;
+  vector<phosg::scoped_fd> ssl_listen_fds;
   size_t num_threads;
 
   pid_t signal_parent_pid;
@@ -70,20 +68,18 @@ struct ServerConfiguration {
   unique_ptr<ResourceManagerBase> resource_manager;
 
   ServerConfiguration()
-    : log_requests(false),
-      num_threads(0),
-      signal_parent_pid(0),
-      gzip_compress_level(6),
-      mtime_check_secs(60),
-      ssl_ctx(nullptr),
-      index_resource(nullptr),
-      not_found_resource(nullptr) { }
+      : log_requests(false),
+        num_threads(0),
+        signal_parent_pid(0),
+        gzip_compress_level(6),
+        mtime_check_secs(60),
+        ssl_ctx(nullptr),
+        index_resource(nullptr),
+        not_found_resource(nullptr) {}
 };
 
 static shared_ptr<const ResourceManagerBase::Resource> default_not_found_resource(
     new ResourceManagerBase::Resource("File not found", 0, "text/plain"));
-
-
 
 static void print_evbuffer_contents(struct evbuffer* buf) {
   // warning: this is super slow; it copies the data
@@ -91,7 +87,7 @@ static void print_evbuffer_contents(struct evbuffer* buf) {
   if (size) {
     string data(size, 0);
     evbuffer_copyout(buf, const_cast<char*>(data.data()), data.size());
-    print_data(stderr, data);
+    phosg::print_data(stderr, data);
   }
 }
 
@@ -105,15 +101,15 @@ void handle_request(struct evhttp_request* req, void* ctx) {
   string log_prefix;
   if (state->log_requests) {
     static const unordered_map<enum evhttp_cmd_type, const char*> name_for_method({
-      {EVHTTP_REQ_GET,     "GET"},
-      {EVHTTP_REQ_POST,    "POST"},
-      {EVHTTP_REQ_HEAD,    "HEAD"},
-      {EVHTTP_REQ_PUT,     "PUT"},
-      {EVHTTP_REQ_DELETE,  "DELETE"},
-      {EVHTTP_REQ_OPTIONS, "OPTIONS"},
-      {EVHTTP_REQ_TRACE,   "TRACE"},
-      {EVHTTP_REQ_CONNECT, "CONNECT"},
-      {EVHTTP_REQ_PATCH,   "PATCH"},
+        {EVHTTP_REQ_GET, "GET"},
+        {EVHTTP_REQ_POST, "POST"},
+        {EVHTTP_REQ_HEAD, "HEAD"},
+        {EVHTTP_REQ_PUT, "PUT"},
+        {EVHTTP_REQ_DELETE, "DELETE"},
+        {EVHTTP_REQ_OPTIONS, "OPTIONS"},
+        {EVHTTP_REQ_TRACE, "TRACE"},
+        {EVHTTP_REQ_CONNECT, "CONNECT"},
+        {EVHTTP_REQ_PATCH, "PATCH"},
     });
 
     try {
@@ -167,7 +163,7 @@ void handle_request(struct evhttp_request* req, void* ctx) {
         code = 304;
         evhttp_send_reply(req, 304, "Not Modified", nullptr);
 
-      // no ETag, it didn't match, or it's a 404
+        // no ETag, it didn't match, or it's a 404
       } else {
         evhttp_add_header(out_headers, "Content-Type", res->mime_type);
         // don't send ETag for 404s
@@ -182,7 +178,7 @@ void handle_request(struct evhttp_request* req, void* ctx) {
 
           if (in_accept_encoding &&
               (strchr(in_accept_encoding, '*') ||
-               strstr(in_accept_encoding, "gzip"))) {
+                  strstr(in_accept_encoding, "gzip"))) {
             evhttp_add_header(out_headers, "Content-Encoding", "gzip");
             evbuffer_add_reference(evhttp_request_get_output_buffer(req),
                 res->gzip_data.data(), res->gzip_data.size(), nullptr, nullptr);
@@ -206,7 +202,7 @@ void handle_request(struct evhttp_request* req, void* ctx) {
     }
 
     if (state->log_requests) {
-      log_info("request: %s => %d (res=%s)",
+      phosg::log_info("request: %s => %d (res=%s)",
           log_prefix.c_str(), code, res ? res->etag.c_str() : "(none)");
       struct evbuffer* buf = evhttp_request_get_input_buffer(req);
       print_evbuffer_contents(buf);
@@ -219,14 +215,12 @@ void handle_request(struct evhttp_request* req, void* ctx) {
     evhttp_send_reply(req, 500, "Internal Server Error", nullptr);
 
     if (state->log_requests) {
-      log_info("request: %s => 500 (%s)", log_prefix.c_str(), e.what());
+      phosg::log_info("request: %s => 500 (%s)", log_prefix.c_str(), e.what());
       struct evbuffer* buf = evhttp_request_get_input_buffer(req);
       print_evbuffer_contents(buf);
     }
   }
 }
-
-
 
 static struct bufferevent* on_ssl_connection(struct event_base* base, void* ctx) {
   SSL_CTX* ssl_ctx = reinterpret_cast<SSL_CTX*>(ctx);
@@ -237,19 +231,19 @@ static struct bufferevent* on_ssl_connection(struct event_base* base, void* ctx)
 
 void http_server_thread(const ServerConfiguration& state) {
 
-  unique_ptr<struct event_base, void(*)(struct event_base*)> base(
+  unique_ptr<struct event_base, void (*)(struct event_base*)> base(
       event_base_new(), event_base_free);
   if (!base) {
-    log_error("error: can\'t open event base for http server");
+    phosg::log_error("error: can\'t open event base for http server");
     return;
   }
 
-  vector<unique_ptr<struct evhttp, void(*)(struct evhttp*)>> servers;
+  vector<unique_ptr<struct evhttp, void (*)(struct evhttp*)>> servers;
 
   servers.emplace_back(evhttp_new(base.get()), evhttp_free);
   auto& server = servers.back();
   if (!server) {
-    log_error("error: can\'t create http server");
+    phosg::log_error("error: can\'t create http server");
     return;
   }
   evhttp_set_gencb(server.get(), handle_request, (void*)&state);
@@ -261,7 +255,7 @@ void http_server_thread(const ServerConfiguration& state) {
     servers.emplace_back(evhttp_new(base.get()), evhttp_free);
     auto& ssl_server = servers.back();
     if (!ssl_server) {
-      log_error("error: can\'t create ssl http server");
+      phosg::log_error("error: can\'t create ssl http server");
       return;
     }
 
@@ -281,7 +275,7 @@ void http_server_thread(const ServerConfiguration& state) {
     }
   };
 
-  struct timeval tv = usecs_to_timeval(5000000);
+  struct timeval tv = phosg::usecs_to_timeval(5000000);
   struct event* ev = event_new(base.get(), -1, EV_PERSIST,
       check_for_thread_exit, base.get());
   event_add(ev, &tv);
@@ -290,8 +284,6 @@ void http_server_thread(const ServerConfiguration& state) {
 
   event_del(ev);
 }
-
-
 
 void signal_handler(int signum) {
   if ((signum == SIGTERM) || (signum == SIGINT)) {
@@ -302,8 +294,6 @@ void signal_handler(int signum) {
     reload_pid = -reload_pid;
   }
 }
-
-
 
 void print_usage(const char* argv0) {
   fprintf(stderr, "\
@@ -381,16 +371,17 @@ Options:\n\
       this will make fastweb significantly less fast.\n\
 \n\
 At least one --fd/--listen or --ssl-fd/--ssl-listen option must be given.\n\
-If no data directories are given, the current directory is used.\n", argv0);
+If no data directories are given, the current directory is used.\n",
+      argv0);
 }
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
   ServerConfiguration state;
   size_t num_bad_options = 0;
 
   auto add_listen_addr = [&](const char* arg, bool is_ssl) {
     auto& addrs = is_ssl ? state.ssl_listen_addrs : state.listen_addrs;
-    auto parts = split(arg, ':');
+    auto parts = phosg::split(arg, ':');
     if (parts.size() == 1) {
       if (!parts[0].empty() && (parts[0][0] == '/')) {
         // it's a unix socket
@@ -403,7 +394,7 @@ int main(int argc, char **argv) {
       // it's an addr:port pair
       addrs.emplace_back(make_pair(parts[0], stoi(parts[1])));
     } else {
-      log_error("bad netloc in command line: %s", arg);
+      phosg::log_error("bad netloc in command line: %s", arg);
       num_bad_options++;
     }
   };
@@ -414,22 +405,22 @@ int main(int argc, char **argv) {
       state.signal_parent_pid = atoi(&argv[x][16]);
 
     } else if (!strncmp(argv[x], "--fd=", 5)) {
-      state.listen_fds.emplace(atoi(&argv[x][5]));
+      state.listen_fds.emplace_back(atoi(&argv[x][5]));
 
     } else if (!strncmp(argv[x], "--ssl-fd=", 9)) {
-      state.ssl_listen_fds.emplace(atoi(&argv[x][9]));
+      state.ssl_listen_fds.emplace_back(atoi(&argv[x][9]));
 
     } else if (!strncmp(argv[x], "--ssl-cert=", 11)) {
       state.ssl_cert_filename = &argv[x][11];
-      state.ssl_cert_mtime = stat(state.ssl_cert_filename).st_mtime;
+      state.ssl_cert_mtime = phosg::stat(state.ssl_cert_filename).st_mtime;
 
     } else if (!strncmp(argv[x], "--ssl-ca-cert=", 14)) {
       state.ssl_ca_cert_filename = &argv[x][14];
-      state.ssl_ca_cert_mtime = stat(state.ssl_ca_cert_filename).st_mtime;
+      state.ssl_ca_cert_mtime = phosg::stat(state.ssl_ca_cert_filename).st_mtime;
 
     } else if (!strncmp(argv[x], "--ssl-key=", 10)) {
       state.ssl_key_filename = &argv[x][10];
-      state.ssl_key_mtime = stat(state.ssl_key_filename).st_mtime;
+      state.ssl_key_mtime = phosg::stat(state.ssl_key_filename).st_mtime;
 
     } else if (!strncmp(argv[x], "--threads=", 10)) {
       state.num_threads = atoi(&argv[x][10]);
@@ -473,23 +464,23 @@ int main(int argc, char **argv) {
   }
   if (state.listen_fds.empty() && state.ssl_listen_fds.empty() &&
       state.listen_addrs.empty() && state.ssl_listen_addrs.empty()) {
-    log_error("no listening sockets or addresses given");
+    phosg::log_error("no listening sockets or addresses given");
     print_usage(argv[0]);
     return 1;
   }
   if (state.data_directories.empty()) {
     state.data_directories.emplace_back("./");
-    log_warning("no data directories given; using the current directory");
+    phosg::log_warning("no data directories given; using the current directory");
   }
   if ((!state.ssl_listen_fds.empty() || !state.ssl_listen_addrs.empty()) &&
       (state.ssl_cert_filename.empty() || state.ssl_key_filename.empty())) {
-    log_error("an SSL certificate and key must be given if SSL listen sockets or addresses are given");
+    phosg::log_error("an SSL certificate and key must be given if SSL listen sockets or addresses are given");
     print_usage(argv[0]);
     return 1;
   }
   if ((!state.ssl_listen_fds.empty() || !state.ssl_listen_addrs.empty()) &&
       state.ssl_ca_cert_filename.empty()) {
-    log_warning("no CA certificate filename given; some clients may reject this server\'s certificate");
+    phosg::log_warning("no CA certificate filename given; some clients may reject this server\'s certificate");
   }
 
   // open listening sockets. this has to happen before dropping privileges so we
@@ -498,21 +489,21 @@ int main(int argc, char **argv) {
   // call bind()
   for (int ssl = 0; ssl < 2; ssl++) {
     for (const auto& listen_addr : (ssl ? state.ssl_listen_addrs : state.listen_addrs)) {
-      int fd = listen(listen_addr.first, listen_addr.second, SOMAXCONN);
+      int fd = phosg::listen(listen_addr.first, listen_addr.second, SOMAXCONN);
       if (fd < 0) {
-        log_error("can\'t open listening socket; addr=%s, port=%d",
+        phosg::log_error("can\'t open listening socket; addr=%s, port=%d",
             listen_addr.first.c_str(), listen_addr.second);
         return 2;
       }
 
       evutil_make_socket_nonblocking(fd);
       if (ssl) {
-        state.ssl_listen_fds.emplace(fd);
+        state.ssl_listen_fds.emplace_back(fd);
       } else {
-        state.listen_fds.emplace(fd);
+        state.listen_fds.emplace_back(fd);
       }
 
-      log_info("opened listening socket %d: addr=%s, port=%d",
+      phosg::log_info("opened listening socket %d: addr=%s, port=%d",
           fd, listen_addr.first.c_str(), listen_addr.second);
     }
   }
@@ -521,38 +512,37 @@ int main(int argc, char **argv) {
   // can detect permissions problems at initial startup instead of at reload
   if (!state.user.empty()) {
     if ((getuid() != 0) || (getgid() != 0)) {
-      log_error("not started as root; can\'t switch to user %s", state.user.c_str());
+      phosg::log_error("not started as root; can\'t switch to user %s", state.user.c_str());
       return 2;
     }
 
     struct passwd* pw = getpwnam(state.user.c_str());
     if (!pw) {
-      string error = string_for_error(errno);
-      log_error("user %s not found (%s)", state.user.c_str(), error.c_str());
+      string error = phosg::string_for_error(errno);
+      phosg::log_error("user %s not found (%s)", state.user.c_str(), error.c_str());
       return 2;
     }
 
     if (setgid(pw->pw_gid) != 0) {
-      string error = string_for_error(errno);
-      log_error("can\'t switch to group %d (%s)", pw->pw_gid, error.c_str());
+      string error = phosg::string_for_error(errno);
+      phosg::log_error("can\'t switch to group %d (%s)", pw->pw_gid, error.c_str());
       return 2;
     }
     if (setuid(pw->pw_uid) != 0) {
-      string error = string_for_error(errno);
-      log_error("can\'t switch to user %d (%s)", pw->pw_uid, error.c_str());
+      string error = phosg::string_for_error(errno);
+      phosg::log_error("can\'t switch to user %d (%s)", pw->pw_uid, error.c_str());
       return 2;
     }
-    log_info("switched to user %s (%d:%d)",  state.user.c_str(), pw->pw_uid,
-        pw->pw_gid);
+    phosg::log_info("switched to user %s (%d:%d)", state.user.c_str(), pw->pw_uid, pw->pw_gid);
   }
 
   // load data
-  uint64_t load_start_time = now();
+  uint64_t load_start_time = phosg::now();
   for (const auto& directory : state.data_directories) {
     state.resource_manager->add_directory(directory, state.gzip_compress_level);
   }
-  uint64_t load_end_time = now();
-  log_info("loaded %zu resources, including %zu files (%zu bytes, %zu compressed, %g%%), in %" PRIu64 " microseconds",
+  uint64_t load_end_time = phosg::now();
+  phosg::log_info("loaded %zu resources, including %zu files (%zu bytes, %zu compressed, %g%%), in %" PRIu64 " microseconds",
       state.resource_manager->resource_count(),
       state.resource_manager->file_count(),
       state.resource_manager->resource_bytes(),
@@ -560,7 +550,7 @@ int main(int argc, char **argv) {
       (static_cast<float>(state.resource_manager->compressed_resource_bytes()) / state.resource_manager->resource_bytes()) * 100,
       load_end_time - load_start_time);
   if (state.mtime_check_secs) {
-    log_info("checking for changes to these resources every %" PRIu64 " seconds", state.mtime_check_secs);
+    phosg::log_info("checking for changes to these resources every %" PRIu64 " seconds", state.mtime_check_secs);
   }
 
   // resolve special resources
@@ -568,7 +558,7 @@ int main(int argc, char **argv) {
     try {
       state.index_resource = state.resource_manager->get_resource(state.index_resource_name);
     } catch (const out_of_range& e) {
-      log_error("index resource %s does not exist", state.index_resource_name.c_str());
+      phosg::log_error("index resource %s does not exist", state.index_resource_name.c_str());
       return 2;
     }
   }
@@ -576,7 +566,7 @@ int main(int argc, char **argv) {
     try {
       state.not_found_resource = state.resource_manager->get_resource(state.not_found_resource_name);
     } catch (const out_of_range& e) {
-      log_error("404 resource %s does not exist", state.not_found_resource_name.c_str());
+      phosg::log_error("404 resource %s does not exist", state.not_found_resource_name.c_str());
       return 2;
     }
   }
@@ -588,7 +578,7 @@ int main(int argc, char **argv) {
 
     state.ssl_ctx = SSL_CTX_new(TLS_method());
     if (!state.ssl_ctx) {
-      log_error("can\'t create openssl context");
+      phosg::log_error("can\'t create openssl context");
       ERR_print_errors_fp(stderr);
       return 2;
     }
@@ -597,22 +587,22 @@ int main(int argc, char **argv) {
     SSL_CTX_set_ecdh_auto(state.ssl_ctx, 1);
     if (!state.ssl_ca_cert_filename.empty()) {
       SSL_CTX_load_verify_locations(state.ssl_ctx, state.ssl_ca_cert_filename.c_str(), nullptr);
-      log_info("loaded ssl ca certificate from %s", state.ssl_ca_cert_filename.c_str());
+      phosg::log_info("loaded ssl ca certificate from %s", state.ssl_ca_cert_filename.c_str());
     }
     if (SSL_CTX_use_certificate_file(state.ssl_ctx,
-        state.ssl_cert_filename.c_str(), SSL_FILETYPE_PEM) <= 0) {
-      log_error("can\'t open %s", state.ssl_cert_filename.c_str());
+            state.ssl_cert_filename.c_str(), SSL_FILETYPE_PEM) <= 0) {
+      phosg::log_error("can\'t open %s", state.ssl_cert_filename.c_str());
       ERR_print_errors_fp(stderr);
       return 2;
     }
-    log_info("loaded ssl certificate from %s", state.ssl_cert_filename.c_str());
+    phosg::log_info("loaded ssl certificate from %s", state.ssl_cert_filename.c_str());
     if (SSL_CTX_use_PrivateKey_file(state.ssl_ctx,
-        state.ssl_key_filename.c_str(), SSL_FILETYPE_PEM) <= 0) {
-      log_error("can\'t open %s", state.ssl_key_filename.c_str());
+            state.ssl_key_filename.c_str(), SSL_FILETYPE_PEM) <= 0) {
+      phosg::log_error("can\'t open %s", state.ssl_key_filename.c_str());
       ERR_print_errors_fp(stderr);
       return 2;
     }
-    log_info("loaded ssl private key from %s", state.ssl_key_filename.c_str());
+    phosg::log_info("loaded ssl private key from %s", state.ssl_key_filename.c_str());
   }
 
   // start server threads
@@ -624,7 +614,7 @@ int main(int argc, char **argv) {
   while (server_threads.size() < state.num_threads) {
     server_threads.emplace_back(http_server_thread, cref(state));
   }
-  log_info("started %zu server threads", state.num_threads);
+  phosg::log_info("started %zu server threads", state.num_threads);
 
   // register signal handlers
   signal(SIGPIPE, SIG_IGN);
@@ -636,10 +626,10 @@ int main(int argc, char **argv) {
   // kill the parent if needed
   if (state.signal_parent_pid) {
     if (kill(state.signal_parent_pid, SIGTERM)) {
-      log_error("failed to kill parent process %d", state.signal_parent_pid);
+      phosg::log_error("failed to kill parent process %d", state.signal_parent_pid);
       return 1;
     }
-    log_info("killed parent process %d", state.signal_parent_pid);
+    phosg::log_info("killed parent process %d", state.signal_parent_pid);
   }
 
   // reloading is implemented as follows:
@@ -657,42 +647,39 @@ int main(int argc, char **argv) {
 
       bool files_changed = state.resource_manager->any_resource_changed();
       if (!files_changed && state.ssl_ctx) {
-        files_changed |= (static_cast<uint64_t>(stat(state.ssl_cert_filename).st_mtime) != state.ssl_cert_mtime);
-        files_changed |= !state.ssl_ca_cert_filename.empty() && (
-            static_cast<uint64_t>(stat(state.ssl_ca_cert_filename).st_mtime) != state.ssl_ca_cert_mtime);
-        files_changed |= (static_cast<uint64_t>(stat(state.ssl_key_filename).st_mtime) != state.ssl_key_mtime);
+        files_changed |= (static_cast<uint64_t>(phosg::stat(state.ssl_cert_filename).st_mtime) != state.ssl_cert_mtime);
+        files_changed |= !state.ssl_ca_cert_filename.empty() && (static_cast<uint64_t>(phosg::stat(state.ssl_ca_cert_filename).st_mtime) != state.ssl_ca_cert_mtime);
+        files_changed |= (static_cast<uint64_t>(phosg::stat(state.ssl_key_filename).st_mtime) != state.ssl_key_mtime);
       }
 
       if (!should_exit && !reload_pid && !should_reload && files_changed) {
         should_reload = true;
-        log_info("some files were changed on disk; reloading");
+        phosg::log_info("some files were changed on disk; reloading");
       }
     } else {
       sigsuspend(&sigs);
     }
 
     if (should_exit) {
-      log_info("exit request received");
+      phosg::log_info("exit request received");
     }
 
     if (should_reload) {
-      log_info("reload request received");
+      phosg::log_info("reload request received");
 
       pid_t parent_pid = getpid();
       reload_pid = fork();
       if (reload_pid < 0) {
-        string error = string_for_error(errno);
-        log_error("reload requested, but can\'t fork (%s)", error.c_str());
+        string error = phosg::string_for_error(errno);
+        phosg::log_error("reload requested, but can\'t fork (%s)", error.c_str());
 
       } else if (reload_pid == 0) {
         // child process: exec ourself with args to pass the listening fds down
         vector<string> args;
         args.emplace_back(argv[0]);
-        args.emplace_back(string_printf("--signal-parent=%d", parent_pid));
-        args.emplace_back(string_printf("--mtime-check-secs=%" PRIu64,
-            state.mtime_check_secs));
-        args.emplace_back(string_printf("--threads=%zu",
-            state.num_threads));
+        args.emplace_back(phosg::string_printf("--signal-parent=%d", parent_pid));
+        args.emplace_back(phosg::string_printf("--mtime-check-secs=%" PRIu64, state.mtime_check_secs));
+        args.emplace_back(phosg::string_printf("--threads=%zu", state.num_threads));
         if (!state.index_resource_name.empty()) {
           args.emplace_back("--index=" + state.index_resource_name);
         }
@@ -709,10 +696,10 @@ int main(int argc, char **argv) {
           args.emplace_back("--ssl-key=" + state.ssl_key_filename);
         }
         for (int fd : state.listen_fds) {
-          args.emplace_back(string_printf("--fd=%d", fd));
+          args.emplace_back(phosg::string_printf("--fd=%d", fd));
         }
         for (int fd : state.ssl_listen_fds) {
-          args.emplace_back(string_printf("--ssl-fd=%d", fd));
+          args.emplace_back(phosg::string_printf("--ssl-fd=%d", fd));
         }
         if (state.log_requests) {
           args.emplace_back("--log-requests");
@@ -731,8 +718,8 @@ int main(int argc, char **argv) {
 
         execvp(argv[0], argv.data());
 
-        string error = string_for_error(errno);
-        log_error("execvp returned (%s)", error.c_str());
+        string error = phosg::string_for_error(errno);
+        phosg::log_error("execvp returned (%s)", error.c_str());
         return 1;
       }
 
@@ -740,28 +727,25 @@ int main(int argc, char **argv) {
     }
 
     if (reload_pid < 0) {
-      log_info("child process terminated; reload failed");
+      phosg::log_info("child process terminated; reload failed");
 
       // reap all relevant zombies
       int exit_status;
       pid_t pid = waitpid(-1, &exit_status, WNOHANG);
       while (pid != -1) {
         if (WIFEXITED(exit_status)) {
-          log_warning("child process %d exited with code %d", pid,
-              WEXITSTATUS(exit_status));
+          phosg::log_warning("child process %d exited with code %d", pid, WEXITSTATUS(exit_status));
         } else if (WIFSIGNALED(exit_status)) {
-          log_warning("child process %d exited due to signal %d", pid,
-              WTERMSIG(exit_status));
+          phosg::log_warning("child process %d exited due to signal %d", pid, WTERMSIG(exit_status));
         } else {
-          log_warning("child process %d exited with status %d", pid,
-              exit_status);
+          phosg::log_warning("child process %d exited with status %d", pid, exit_status);
         }
 
         pid = waitpid(-1, &exit_status, WNOHANG);
       }
       if (errno != ECHILD) {
-        string error = string_for_error(errno);
-        log_warning("failed to reap zombies: %s", error.c_str());
+        string error = phosg::string_for_error(errno);
+        phosg::log_warning("failed to reap zombies: %s", error.c_str());
       }
 
       reload_pid = 0;
@@ -785,6 +769,6 @@ int main(int argc, char **argv) {
     EVP_cleanup();
   }
 
-  log_info("all threads exited");
+  phosg::log_info("all threads exited");
   return 0;
 }

@@ -1,5 +1,6 @@
 #include "MIMEType.hh"
 
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 

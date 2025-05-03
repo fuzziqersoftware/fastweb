@@ -18,11 +18,9 @@ public:
   FileResourceManager& operator=(FileResourceManager&&) = delete;
   virtual ~FileResourceManager() = default;
 
-  virtual void add_directory(
-      const std::string& directory, int gzip_compress_level = 6);
+  virtual void add_directory(const std::string& directory, int gzip_compress_level = 6);
 
-  virtual std::shared_ptr<const Resource> get_resource(
-      const std::string& name) const;
+  virtual std::shared_ptr<const Resource> get_resource(const std::string& name) const;
 
   virtual bool any_resource_changed() const;
 

@@ -162,7 +162,7 @@ const char* mime_type_for_filename(const string& filename) {
     }
   }
 
-  // some common (usually text) files don't have extensions
+  // Some common (usually text) files don't have extensions
   size_t slash_pos = filename.rfind('/');
   if (slash_pos != string::npos) {
     try {

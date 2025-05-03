@@ -13,13 +13,11 @@
 
 using namespace std;
 
-void FileResourceManager::add_directory(
-    const string& directory, int gzip_compress_level) {
+void FileResourceManager::add_directory(const string& directory, int gzip_compress_level) {
   this->root_directories.emplace_back(directory, gzip_compress_level);
 }
 
-shared_ptr<const ResourceManagerBase::Resource>
-FileResourceManager::get_resource(const string& name) const {
+shared_ptr<const ResourceManagerBase::Resource> FileResourceManager::get_resource(const string& name) const {
   if (!name.starts_with("/")) {
     throw std::out_of_range("file not found");
   }
@@ -30,8 +28,7 @@ FileResourceManager::get_resource(const string& name) const {
   for (const auto& root_it : this->root_directories) {
     try {
       auto data = phosg::load_file(root_it.first + name);
-      return shared_ptr<Resource>(new Resource(
-          std::move(data), 0, mime_type_for_filename(name), root_it.second));
+      return shared_ptr<Resource>(new Resource(std::move(data), 0, mime_type_for_filename(name), root_it.second));
     } catch (const runtime_error&) {
     }
   }

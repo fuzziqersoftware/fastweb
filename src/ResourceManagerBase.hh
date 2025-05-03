@@ -19,11 +19,11 @@ public:
 
   struct Resource {
     std::string data;
-    std::string gzip_data; // if blank, compressed is larger than original
+    std::string gzip_data; // If blank, compressed is larger than original
     uint64_t modification_time;
     uint64_t hash;
     std::string etag;
-    const char* mime_type; // if null, it's a redirect
+    const char* mime_type; // If null, it's a redirect
 
     Resource(
         std::string&& data,

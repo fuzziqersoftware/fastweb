@@ -122,6 +122,7 @@ static const unordered_map<string, string> mime_type_for_file_extension({
     {"sh", "text/x-script.sh"},
     {"shtml", "text/html"},
     {"snd", "audio/basic"},
+    {"svg", "image/svg+xml"},
     {"swf", "application/x-shockwave-flash"},
     {"t", "application/x-troff"},
     {"tar", "application/x-tar"},

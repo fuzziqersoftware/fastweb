@@ -121,6 +121,11 @@ void handle_request(struct evhttp_request* req, void* ctx) {
   }
 
   if (evhttp_request_get_command(req) != EVHTTP_REQ_GET) {
+    if (state->log_requests) {
+      phosg::log_info("Request: %s => 405", log_prefix.c_str());
+      struct evbuffer* buf = evhttp_request_get_input_buffer(req);
+      print_evbuffer_contents(buf);
+    }
     evhttp_add_header(out_headers, "Content-Type", "text/plain");
     evbuffer_add_reference(evhttp_request_get_output_buffer(req), "Invalid request method", 22, nullptr, nullptr);
     evhttp_send_reply(req, 405, "Method Not Allowed", nullptr);
@@ -188,8 +193,7 @@ void handle_request(struct evhttp_request* req, void* ctx) {
         }
 
         if (!gzip_response_added) {
-          evbuffer_add_reference(evhttp_request_get_output_buffer(req),
-              res->data.data(), res->data.size(), nullptr, nullptr);
+          evbuffer_add_reference(evhttp_request_get_output_buffer(req), res->data.data(), res->data.size(), nullptr, nullptr);
         }
         evhttp_send_reply(req, code, (code == 404) ? "Not Found" : "OK", nullptr);
       }
@@ -230,7 +234,7 @@ static struct bufferevent* on_ssl_connection(struct event_base* base, void* ctx)
 void http_server_thread(const ServerConfiguration& state) {
   unique_ptr<struct event_base, void (*)(struct event_base*)> base(event_base_new(), event_base_free);
   if (!base) {
-    phosg::log_error("Error: can\'t open event base for http server");
+    phosg::log_error("Error: can\'t open event base for HTTP server");
     return;
   }
 
@@ -239,7 +243,7 @@ void http_server_thread(const ServerConfiguration& state) {
   servers.emplace_back(evhttp_new(base.get()), evhttp_free);
   auto& server = servers.back();
   if (!server) {
-    phosg::log_error("Error: can\'t create http server");
+    phosg::log_error("Error: can\'t create HTTP server");
     return;
   }
   evhttp_set_gencb(server.get(), handle_request, (void*)&state);
@@ -251,7 +255,7 @@ void http_server_thread(const ServerConfiguration& state) {
     servers.emplace_back(evhttp_new(base.get()), evhttp_free);
     auto& ssl_server = servers.back();
     if (!ssl_server) {
-      phosg::log_error("Error: can\'t create ssl http server");
+      phosg::log_error("Error: can\'t create SSL HTTP server");
       return;
     }
 
@@ -570,7 +574,7 @@ int main(int argc, char** argv) {
 
     state.ssl_ctx = SSL_CTX_new(TLS_method());
     if (!state.ssl_ctx) {
-      phosg::log_error("Can\'t create openssl context");
+      phosg::log_error("Can\'t create OpenSSL context");
       ERR_print_errors_fp(stderr);
       return 2;
     }
@@ -579,22 +583,20 @@ int main(int argc, char** argv) {
     SSL_CTX_set_ecdh_auto(state.ssl_ctx, 1);
     if (!state.ssl_ca_cert_filename.empty()) {
       SSL_CTX_load_verify_locations(state.ssl_ctx, state.ssl_ca_cert_filename.c_str(), nullptr);
-      phosg::log_info("Loaded ssl ca certificate from %s", state.ssl_ca_cert_filename.c_str());
+      phosg::log_info("Loaded SSL CA certificate from %s", state.ssl_ca_cert_filename.c_str());
     }
-    if (SSL_CTX_use_certificate_file(state.ssl_ctx,
-            state.ssl_cert_filename.c_str(), SSL_FILETYPE_PEM) <= 0) {
+    if (SSL_CTX_use_certificate_file(state.ssl_ctx, state.ssl_cert_filename.c_str(), SSL_FILETYPE_PEM) <= 0) {
       phosg::log_error("Can\'t open %s", state.ssl_cert_filename.c_str());
       ERR_print_errors_fp(stderr);
       return 2;
     }
-    phosg::log_info("Loaded ssl certificate from %s", state.ssl_cert_filename.c_str());
-    if (SSL_CTX_use_PrivateKey_file(state.ssl_ctx,
-            state.ssl_key_filename.c_str(), SSL_FILETYPE_PEM) <= 0) {
+    phosg::log_info("Loaded SSL certificate from %s", state.ssl_cert_filename.c_str());
+    if (SSL_CTX_use_PrivateKey_file(state.ssl_ctx, state.ssl_key_filename.c_str(), SSL_FILETYPE_PEM) <= 0) {
       phosg::log_error("Can\'t open %s", state.ssl_key_filename.c_str());
       ERR_print_errors_fp(stderr);
       return 2;
     }
-    phosg::log_info("Loaded ssl private key from %s", state.ssl_key_filename.c_str());
+    phosg::log_info("Loaded SSL private key from %s", state.ssl_key_filename.c_str());
   }
 
   // Start server threads
@@ -640,7 +642,8 @@ int main(int argc, char** argv) {
       bool files_changed = state.resource_manager->any_resource_changed();
       if (!files_changed && state.ssl_ctx) {
         files_changed |= (static_cast<uint64_t>(phosg::stat(state.ssl_cert_filename).st_mtime) != state.ssl_cert_mtime);
-        files_changed |= !state.ssl_ca_cert_filename.empty() && (static_cast<uint64_t>(phosg::stat(state.ssl_ca_cert_filename).st_mtime) != state.ssl_ca_cert_mtime);
+        files_changed |= !state.ssl_ca_cert_filename.empty() &&
+            (static_cast<uint64_t>(phosg::stat(state.ssl_ca_cert_filename).st_mtime) != state.ssl_ca_cert_mtime);
         files_changed |= (static_cast<uint64_t>(phosg::stat(state.ssl_key_filename).st_mtime) != state.ssl_key_mtime);
       }
 
@@ -755,7 +758,7 @@ int main(int argc, char** argv) {
     t.join();
   }
 
-  // Clean up openssl stuff
+  // Clean up OpenSSL stuff
   if (state.ssl_ctx) {
     SSL_CTX_free(state.ssl_ctx);
     EVP_cleanup();
